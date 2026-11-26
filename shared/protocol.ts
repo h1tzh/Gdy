@@ -31,6 +31,7 @@ export type RoomView = {
   host: string;
   turn: string | null;
   turnDeadline: number | null;
+  turnNudges: number;
   serverTime: number;
   winner: string | null;
   bombCount: number;
@@ -61,7 +62,9 @@ export interface ClientEvents {
   play: (data: { revision: number; ids: string[] }, reply: Reply) => void;
   pass: (revision: number, reply: Reply) => void;
   autoplay: (enabled: boolean, reply: Reply) => void;
+  nudge: (revision: number, reply: Reply) => void;
   react: (data: { to: string; kind: ReactionKind }, reply: Reply) => void;
+  kick: (playerId: string, reply: Reply) => void;
   leave: (reply: Reply) => void;
 }
 

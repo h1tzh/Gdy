@@ -7,7 +7,7 @@ import { identifyPlay, shuffledDeck } from './rules.js';
 export type Player = Profile & { id: string; token: string; bot: boolean; connection: string | null; offlineSince: number | null; autoPlay: boolean; hand: Card[]; drawnCardId: string | null; score: number; completedRound: boolean };
 export type Room = {
   code: string; mode: RoomView['mode']; players: Player[]; phase: RoomView['phase']; revision: number; round: number; deck: Card[]; deckSize: number;
-  turn: string | null; turnDeadline: number | null; winner: string | null; lastPlay: RoomView['lastPlay']; lastDraw: RoomView['lastDraw']; passes: string[]; notice: string; updated: number;
+  turn: string | null; turnDeadline: number | null; turnNudges: number; winner: string | null; lastPlay: RoomView['lastPlay']; lastDraw: RoomView['lastDraw']; passes: string[]; notice: string; updated: number;
   bombCount: number; settlement: Settlement[]; roundLimit: RoomView['roundLimit']; roundsCompleted: number; finalScores: RoomView['finalScores'];
   departedScores: MatchScore[]; revealedHands: RoomView['revealedHands'];
 };
@@ -26,7 +26,7 @@ export function normalizeProfile(input: unknown): Profile {
 }
 
 export function createRoom(code: string, mode: RoomView['mode'] = 'friends', roundLimit: RoomView['roundLimit'] = mode === 'friends' ? 5 : null): Room {
-  return { code, mode, players: [], phase: 'lobby', revision: 0, round: 0, roundLimit, roundsCompleted: 0, finalScores: null, departedScores: [], deck: [], deckSize: 0, turn: null, turnDeadline: null, winner: null, lastPlay: null, lastDraw: null, passes: [], bombCount: 0, settlement: [], revealedHands: [], notice: '房间已创建，邀请朋友来上桌。', updated: Date.now() };
+  return { code, mode, players: [], phase: 'lobby', revision: 0, round: 0, roundLimit, roundsCompleted: 0, finalScores: null, departedScores: [], deck: [], deckSize: 0, turn: null, turnDeadline: null, turnNudges: 0, winner: null, lastPlay: null, lastDraw: null, passes: [], bombCount: 0, settlement: [], revealedHands: [], notice: '房间已创建，邀请朋友来上桌。', updated: Date.now() };
 }
 
 export function addPlayer(room: Room, profile: Profile, connection: string | null): Player {
@@ -46,21 +46,34 @@ export function sessionFor(room: Room, player: Player): Session {
 
 function sortedHand(hand: Card[]) { return hand.slice().sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id)); }
 
+export function isAutoPlaying(player: Player) { return player.autoPlay || player.offlineSince !== null; }
+
 export function viewFor(room: Room, player: Player): RoomView {
-  const { code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount } = room;
+  const { code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount } = room;
   return {
-    code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount,
+    code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount,
     drawnCardId: player.drawnCardId, serverTime: Date.now(),
     deckCount: room.deck.length, you: player.id, host: room.players[0].id, hand: sortedHand(player.hand),
-    playableCardIds: phase === 'playing' && turn === player.id && !player.autoPlay ? playableCardIds(player.hand, lastPlay?.shape) : [],
+    playableCardIds: phase === 'playing' && turn === player.id && !isAutoPlaying(player) ? playableCardIds(player.hand, lastPlay?.shape) : [],
     revealedHands: phase === 'finished' ? room.revealedHands : [],
-    players: room.players.map(({ id, name, avatar, bot, connection, autoPlay, hand, score }) => ({ id, name, avatar, bot, autoPlay, online: bot || Boolean(connection), count: hand.length, score })),
+    players: room.players.map((seat) => {
+      const { id, name, avatar, bot, connection, hand, score } = seat;
+      return { id, name, avatar, bot, autoPlay: isAutoPlaying(seat), online: bot || Boolean(connection), count: hand.length, score };
+    }),
   };
 }
 
 function setTurn(room: Room, playerId: string | null) {
   room.turn = playerId;
   room.turnDeadline = playerId === null ? null : Date.now() + TURN_MS;
+  room.turnNudges = 0;
+}
+
+export function nudgeTurn(room: Room, player: Player, revision: number) {
+  requireGame(room.phase === 'playing' && room.revision === revision && room.turnDeadline !== null && Date.now() < room.turnDeadline, '出牌回合已更新，请再试一次。');
+  const target = room.players.find((seat) => seat.id === room.turn);
+  requireGame(target && target !== player && target.connection && !isAutoPlaying(target), '只能催当前在线、未托管的其他玩家。');
+  room.turnNudges++;
 }
 
 export function startRound(room: Room, player: Player, revision: number) {
@@ -97,7 +110,7 @@ function validateTurn(room: Room, player: Player, revision: number, automatic: b
   requireGame(room.revision === revision, '牌桌有更新，请再试一次。');
   requireGame(room.phase === 'playing' && room.turn === player.id, '还没轮到你出牌。');
   if (!automatic) {
-    requireGame(!player.autoPlay, '托管已开启，取消托管后可以手动出牌。');
+    requireGame(!isAutoPlaying(player), '托管已开启，取消托管后可以手动出牌。');
     requireGame(room.turnDeadline !== null && Date.now() < room.turnDeadline, '本回合已超时，系统将自动操作。');
   }
 }
@@ -197,7 +210,7 @@ export function passTurn(room: Room, player: Player, revision: number, automatic
   room.notice = leader === next ? `${drawNotice}，由${next.name}领出。` : `${drawNotice}；${next.name}只剩王，改由${leader.name}领出。`;
 }
 
-export function removePlayer(room: Room, player: Player) {
+export function removePlayer(room: Room, player: Player, removed = false) {
   if (room.roundLimit && !room.finalScores && player.completedRound) room.departedScores.push(scoreOf(player));
   room.players = room.players.filter((seat) => seat !== player);
   room.revision++;
@@ -215,8 +228,8 @@ export function removePlayer(room: Room, player: Player) {
       seat.hand = [];
       seat.drawnCardId = null;
     }
-    room.notice = `${player.name} 离开了房间，本局取消。`;
+    room.notice = `${player.name} ${removed ? '被房主移出房间' : '离开了房间'}，本局取消。`;
   } else {
-    room.notice = `${player.name} 离开了牌桌。`;
+    room.notice = `${player.name} ${removed ? '被房主移出房间' : '离开了牌桌'}。`;
   }
 }

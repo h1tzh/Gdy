@@ -64,8 +64,7 @@ export function useGame() {
     if (saved && (!inviteCode() || saved.code === inviteCode())) session.current = saved;
     function onDisconnect() { setOnline(false); setReady(false); }
     function onRemoved(reason: string) {
-      session.current = null;
-      setRoom(null);
+      clear();
       setError(reason);
     }
     function onReaction(reaction: TableReaction) { setReactions((items) => [...items.slice(-7), reaction]); }
@@ -101,7 +100,9 @@ export function useGame() {
     play: (revision: number, ids: string[], done: () => void) => act(() => request().emitWithAck('play', { revision, ids }), done),
     pass: (revision: number, done: () => void) => act(() => request().emitWithAck('pass', revision), done),
     autoplay: (enabled: boolean, done: () => void) => act(() => request().emitWithAck('autoplay', enabled), done),
+    nudge: (revision: number) => act(() => request().emitWithAck('nudge', revision)),
     react: (to: string, kind: ReactionKind, done: () => void) => act(() => request().emitWithAck('react', { to, kind }), done),
+    kick: (playerId: string, done: () => void) => act(() => request().emitWithAck('kick', playerId), done),
     leave: (done: () => void) => act(() => request().emitWithAck('leave'), () => { clear(); done(); }),
   };
 }

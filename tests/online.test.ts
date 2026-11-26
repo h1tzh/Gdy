@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { io, type Socket } from 'socket.io-client';
@@ -24,7 +24,7 @@ function value<T>(result: Result<T>) {
   return result.value;
 }
 
-test('联机建房、加入、资料同步、掉线恢复和人机自动行动', { timeout: 12_000 }, async (t) => {
+async function fixture(t: TestContext) {
   const { http, io: server } = buildServer();
   const sockets: Client[] = [];
   t.after(async () => { sockets.forEach((socket) => socket.disconnect()); await server.close(); });
@@ -39,7 +39,11 @@ test('联机建房、加入、资料同步、掉线恢复和人机自动行动',
     await new Promise<void>((resolve, reject) => { client.once('connect', resolve).once('connect_error', reject); });
     return client;
   }
+  return { server, connect };
+}
 
+test('联机建房、加入、资料同步、掉线恢复和人机自动行动', { timeout: 12_000 }, async (t) => {
+  const { server, connect } = await fixture(t);
   const host = await connect();
   const guest = await connect();
   assert.equal((await host.timeout(2000).emitWithAck('create', { name: '   ', avatar: 12 })).ok, false);
@@ -111,14 +115,8 @@ test('联机建房、加入、资料同步、掉线恢复和人机自动行动',
 });
 
 test('手动玩家超时后服务器代打；更新头像资料不会重置倒计时', { timeout: 24_000 }, async (t) => {
-  const { http, io: server } = buildServer();
-  http.listen(0, '127.0.0.1');
-  await once(http, 'listening');
-  const address = http.address();
-  assert(address && typeof address !== 'string');
-  const client: Client = io(`http://127.0.0.1:${address.port}`, { timeout: 1500, reconnection: false });
-  t.after(async () => { client.disconnect(); await server.close(); });
-  await new Promise<void>((resolve, reject) => { client.once('connect', resolve).once('connect_error', reject); });
+  const { connect } = await fixture(t);
+  const client = await connect();
   const initial = state(client, (room) => room.phase === 'playing');
   value(await client.timeout(2000).emitWithAck('practice', { name: '发呆的馒头', avatar: 0, bots: 1 }));
   const room = await initial;
@@ -130,4 +128,126 @@ test('手动玩家超时后服务器代打；更新头像资料不会重置倒�
   assert(acted.serverTime >= room.turnDeadline! - 5);
   assert(acted.serverTime < room.turnDeadline! + 2000);
   assert(acted.hand.length < room.hand.length);
+});
+
+test('房主可移出在线或掉线的好友；旧座位失效且进行中的一局不计分', { timeout: 8_000 }, async (t) => {
+  const { connect } = await fixture(t);
+  const host = await connect();
+  const guest = await connect();
+  const third = await connect();
+  const room = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1 }));
+  const joining = state(host, (view) => view.players.length === 3);
+  const guestSeat = value<Session>(await guest.timeout(2000).emitWithAck('join', { code: room.code, name: '来客', avatar: 2 }));
+  const thirdSeat = value<Session>(await third.timeout(2000).emitWithAck('join', { code: room.code, name: '另一位来客', avatar: 3 }));
+  const lobby = await joining;
+  assert.equal((await guest.timeout(2000).emitWithAck('kick', thirdSeat.playerId)).ok, false);
+  assert.equal((await host.timeout(2000).emitWithAck('kick', room.playerId)).ok, false);
+  value(await host.timeout(2000).emitWithAck('start', lobby.revision));
+  const removed = new Promise<string>((resolve) => guest.once('removed', resolve));
+  const cancelled = state(host, (view) => view.phase === 'lobby' && view.players.length === 2);
+  value(await host.timeout(2000).emitWithAck('kick', guestSeat.playerId));
+  assert.match(await removed, /房主移出/);
+  const afterKick = await cancelled;
+  assert.deepEqual([afterKick.roundsCompleted, afterKick.turn, afterKick.hand.length], [0, null, 0]);
+  assert.equal((await guest.timeout(2000).emitWithAck('resume', guestSeat)).ok, false);
+  assert(value<Session>(await guest.timeout(2000).emitWithAck('create', { name: '新的房间', avatar: 2 })).code);
+
+  const disconnected = state(host, (view) => view.players.some((player) => player.id === thirdSeat.playerId && !player.online));
+  third.disconnect();
+  await disconnected;
+  const alone = state(host, (view) => view.players.length === 1);
+  value(await host.timeout(2000).emitWithAck('kick', thirdSeat.playerId));
+  await alone;
+  assert.equal((await (await connect()).timeout(2000).emitWithAck('resume', thirdSeat)).ok, false);
+});
+
+test('同一回合可反复催牌，只提醒当前在线手动玩家，不影响倒计时', { timeout: 8_000 }, async (t) => {
+  const { server, connect } = await fixture(t);
+  const host = await connect();
+  const guest = await connect();
+  const third = await connect();
+  const room = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1 }));
+  const joining = state(host, (view) => view.players.length === 3);
+  const guestSeat = value<Session>(await guest.timeout(2000).emitWithAck('join', { code: room.code, name: '来客', avatar: 2 }));
+  value(await third.timeout(2000).emitWithAck('join', { code: room.code, name: '同桌', avatar: 3 }));
+  const lobby = await joining;
+  assert.equal((await guest.timeout(2000).emitWithAck('nudge', lobby.revision)).ok, false);
+  const playing = state(host, (view) => view.phase === 'playing');
+  value(await host.timeout(2000).emitWithAck('start', lobby.revision));
+  const turn = await playing;
+  assert.equal((await host.timeout(2000).emitWithAck('nudge', turn.revision)).ok, false);
+  assert.equal((await guest.timeout(2000).emitWithAck('nudge', lobby.revision)).ok, false);
+  for (const [i, sender] of [guest, guest, third, guest].entries()) {
+    const alerted = state(host, (view) => view.turnNudges === i + 1);
+    value(await sender.timeout(2000).emitWithAck('nudge', turn.revision));
+    const nudged = await alerted;
+    assert.deepEqual([nudged.turnDeadline, nudged.revision], [turn.turnDeadline, turn.revision]);
+  }
+
+  const player = server.sockets.sockets.get(host.id!)!.data.seat!.player;
+  player.hand = [{ id: 'lead', rank: 3, suit: 'hearts' }, { id: 'left', rank: 10, suit: 'hearts' }];
+  const switched = state(host, (view) => view.turn === guestSeat.playerId);
+  value(await host.timeout(2000).emitWithAck('play', { revision: turn.revision, ids: ['lead'] }));
+  const next = await switched;
+  assert.equal(next.turnNudges, 0);
+  value(await guest.timeout(2000).emitWithAck('autoplay', true));
+  assert.equal((await third.timeout(2000).emitWithAck('nudge', next.revision)).ok, false);
+  value(await guest.timeout(2000).emitWithAck('autoplay', false));
+  const alertedAgain = state(guest, (view) => view.turnNudges === 1);
+  value(await third.timeout(2000).emitWithAck('nudge', next.revision));
+  assert.equal((await alertedAgain).turn, guestSeat.playerId);
+});
+
+test('断线快速代打，重连恢复掉线前的手动托管设置', { timeout: 8_000 }, async (t) => {
+  const { server, connect } = await fixture(t);
+  const host = await connect();
+  const guest = await connect();
+  const room = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1 }));
+  const joining = state(host, (view) => view.players.length === 2);
+  const guestSeat = value<Session>(await guest.timeout(2000).emitWithAck('join', { code: room.code, name: '来客', avatar: 2 }));
+  const starting = state(host, (view) => view.phase === 'playing');
+  value(await host.timeout(2000).emitWithAck('start', (await joining).revision));
+  const turn = await starting;
+  const table = server.sockets.sockets.get(host.id!)!.data.seat!.room;
+  table.players[0].hand = [{ id: 'a3', rank: 3, suit: 'hearts' }, { id: 'a5', rank: 5, suit: 'hearts' }];
+  table.players[1].hand = [{ id: 'b4', rank: 4, suit: 'hearts' }, { id: 'b5', rank: 5, suit: 'spades' }];
+
+  value(await guest.timeout(2000).emitWithAck('autoplay', true));
+  let dropped = state(host, (view) => !view.players[1].online);
+  guest.disconnect();
+  assert.equal((await dropped).players[1].autoPlay, true);
+  const resumed = await connect();
+  const recovered = state(resumed, (view) => view.you === guestSeat.playerId);
+  value(await resumed.timeout(2000).emitWithAck('resume', guestSeat));
+  assert.equal((await recovered).players[1].autoPlay, true);
+
+  value(await resumed.timeout(2000).emitWithAck('autoplay', false));
+  dropped = state(host, (view) => !view.players[1].online);
+  resumed.disconnect();
+  assert.equal((await dropped).players[1].autoPlay, true);
+  const guestTurn = state(host, (view) => view.turn === guestSeat.playerId);
+  const reply = state(host, (view) => view.lastPlay?.playerId === guestSeat.playerId && view.lastPlay.automatic);
+  value(await host.timeout(2000).emitWithAck('play', { revision: turn.revision, ids: ['a3'] }));
+  const waiting = await guestTurn;
+  assert.equal((await host.timeout(2000).emitWithAck('nudge', waiting.revision)).ok, false);
+  assert((await reply).serverTime < waiting.turnDeadline! - 10_000);
+
+  const back = await connect();
+  const backView = state(back, (view) => view.you === guestSeat.playerId);
+  value(await back.timeout(2000).emitWithAck('resume', guestSeat));
+  assert.deepEqual((await backView).players.map(({ autoPlay }) => autoPlay), [false, false]);
+  const disconnected = state(back, (view) => !view.players[0].online);
+  host.disconnect();
+  await disconnected;
+  back.disconnect();
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => { clearInterval(timer); reject(new Error('全员断线后，对局未继续')); }, 2200);
+    const timer = setInterval(() => {
+      if (table.phase !== 'finished') return;
+      clearTimeout(timeout);
+      clearInterval(timer);
+      resolve();
+    }, 25);
+  });
+  assert.equal(table.winner, room.playerId);
 });

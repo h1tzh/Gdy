@@ -5,7 +5,7 @@ import express from 'express';
 import { Server } from 'socket.io';
 import { MAX_PLAYERS, REACTIONS, ROUND_OPTIONS, type ClientEvents, type Result, type RoundLimit, type ServerEvents, type Session } from '../shared/protocol.js';
 import { chooseMove } from './bot.js';
-import { addPlayer, createRoom, GameError, normalizeProfile, passTurn, playCards, removePlayer, requireGame, sessionFor, startRound, viewFor, type Player, type Room } from './game.js';
+import { addPlayer, createRoom, GameError, isAutoPlaying, normalizeProfile, nudgeTurn, passTurn, playCards, removePlayer, requireGame, sessionFor, startRound, viewFor, type Player, type Room } from './game.js';
 
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const ROOM_TTL = 20 * 60_000;
@@ -33,9 +33,9 @@ export function buildServer() {
   function scheduleTurn(room: Room) {
     const existing = turnTimers.get(room);
     const player = room.players.find((seat) => seat.id === room.turn);
-    const active = player && room.phase === 'playing' && room.turnDeadline !== null && room.players.some((seat) => seat.connection);
+    const active = player && room.phase === 'playing' && room.turnDeadline !== null;
     if (active) {
-      const quick = player.bot || player.autoPlay;
+      const quick = player.bot || isAutoPlaying(player);
       const revision = room.revision;
       if (existing?.revision === revision && existing.quick === quick) return;
       clearTimeout(existing?.timer);
@@ -58,6 +58,7 @@ export function buildServer() {
   const cleanup = setInterval(() => {
     const now = Date.now();
     for (const [code, room] of rooms) {
+      if (room.phase === 'playing') continue;
       if (room.players.every((seat) => !seat.connection)) {
         if (now - room.updated > ROOM_TTL) rooms.delete(code);
         continue;
@@ -168,6 +169,11 @@ export function buildServer() {
       player.autoPlay = enabled;
       publish(room);
     }));
+    socket.on('nudge', (revision, reply) => handle(reply, () => {
+      const { room, player } = current();
+      nudgeTurn(room, player, revision);
+      publish(room);
+    }));
     socket.on('react', (data, reply) => handle(reply, () => {
       const { room, player } = current();
       requireGame(typeof data?.kind === 'string' && Object.hasOwn(REACTIONS, data.kind), '没有这个互动道具。');
@@ -179,6 +185,19 @@ export function buildServer() {
       for (const seat of room.players) {
         if (seat.connection) io.to(seat.connection).emit('reaction', reaction);
       }
+    }));
+    socket.on('kick', (playerId, reply) => handle(reply, () => {
+      const { room, player } = current();
+      requireGame(room.mode === 'friends' && room.players[0] === player, '只有好友房的房主可以移出玩家。');
+      const target = room.players.find((seat) => seat.id === playerId);
+      requireGame(target && target !== player && !target.bot, '只能移出同桌的其他真人玩家。');
+      const targetSocket = target.connection ? io.sockets.sockets.get(target.connection) : undefined;
+      if (targetSocket) {
+        targetSocket.data.seat = undefined;
+        targetSocket.emit('removed', '你已被房主移出房间。');
+      }
+      removePlayer(room, target, true);
+      publish(room);
     }));
     socket.on('leave', (reply) => handle(reply, () => {
       const { room, player } = current();

@@ -3,6 +3,7 @@ import { cardRank, type Card } from '../shared/protocol.js';
 
 const icons: Record<string, ReactNode> = {
   info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></>,
+  settings: <><path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 4v4m8 2v4m-6 2v4" strokeWidth="3"/></>,
   people: <><circle cx="9" cy="8" r="3"/><path d="M3 18v-1a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v1m2-13a3 3 0 0 1 0 6m0 2a4 4 0 0 1 4 4v1"/></>,
   user: <><circle cx="12" cy="8" r="3"/><path d="M5 20v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/></>,
   plus: <path d="M12 5v14M5 12h14"/>,
