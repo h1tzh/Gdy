@@ -152,7 +152,7 @@ function RuleDetails() {
     <section><h3>03 / 大小王</h3><p>王只能和普通牌一起凑牌，不能单出，也没有王炸。</p></section>
     <section><h3>04 / 过牌与补牌</h3><p>其他人都过牌后，只有最后成功出牌的人从公共牌堆摸一张，然后由他重新领出。底牌用完则直接领出。若领出者只剩王，就顺延给下一位能领出的玩家；若全桌只剩王，则流局不计分。</p></section>
     <section><h3>05 / 胜负与计分</h3><p>先出完手牌的人赢，其他玩家剩几张就扣几分，赢家获得扣分总和。每出一次炸弹，全桌结算翻倍一次；输家手里有王，自己的扣分再翻倍一次。比如本局出了 2 次炸弹，没留王的输家按 4 倍扣分，留王的按 8 倍扣分。</p></section>
-    <section><h3>06 / 选牌与托管</h3><p>轮到你时，能单出或凑成合法牌组的牌会亮边。可以点选，也可以横扫多张牌；从已选中的牌开始横扫可取消选中。每回合 15 秒，超时自动出牌或过牌。开启托管后系统会直接代打，可随时取消。</p></section>
+    <section><h3>06 / 选牌与托管</h3><p>轮到你时，能单出或凑成合法牌组的牌会亮边。可以点选，也可以横扫多张牌；从已选中的牌开始横扫可取消选中。没有牌能接时，提示并在 2 秒后自动过牌，也可以手动过牌。其他回合有 15 秒，超时自动出牌。开启托管后系统会直接代打，可随时取消。</p></section>
   </div>;
 }
 
@@ -286,6 +286,7 @@ function App() {
   const isTurn = room?.phase === 'playing' && room.turn === room.you;
   const seconds = useTurnSeconds(room?.turnDeadline ?? null, room?.serverTime ?? 0);
   const manualTurn = ready && isTurn && !me?.autoPlay ? `${room.code}:${room.you}:${room.revision}` : null;
+  const mustPass = Boolean(manualTurn && room?.lastPlay && room.playableCardIds.length === 0);
   const lowTime = seconds <= 5;
   const reminders = useTurnReminders(manualTurn, seconds, room?.turnNudges ?? 0);
   const drawnCard = room?.hand.find((card) => card.id === room.drawnCardId);
@@ -378,16 +379,17 @@ function App() {
           </section>}
           {room?.phase === 'playing' && !spectating && <section className="panel hand-panel" aria-label="我的手牌">
             <header className="hand-header">
-              <div>{manualTurn ? <><h2 className={`hand-turn${lowTime ? ' hand-turn-low' : ''}`}><span role="status">轮到你出牌</span><small> · {seconds} 秒</small></h2>
-                {lowTime ? <p className="hand-turn-warning" role="status">即将自动{room.playableCardIds.length ? '出牌' : '过牌'}</p> : <p>点选或滑动选牌</p>}</>
+              <div>{manualTurn ? <><h2 className={`hand-turn${lowTime ? ' hand-turn-low' : ''}`}><span role="status">{mustPass ? '没有牌能接' : '轮到你出牌'}</span>{!mustPass && <small> · {seconds} 秒</small>}</h2>
+                {mustPass ? <p className="hand-turn-warning" role="status">{seconds > 0 ? `${seconds} 秒后自动过牌` : '正在自动过牌…'}</p>
+                  : lowTime ? <p className="hand-turn-warning" role="status">即将自动出牌</p> : <p>点选或滑动选牌</p>}</>
                 : <><h2>我的手牌 <small>{room.hand.length} 张</small></h2><p role="status">{!ready ? '正在重新连接牌桌…' : me?.autoPlay ? '托管中，系统会自动操作' : turnPlayer?.online ? '等待其他玩家出牌' : '当前玩家掉线，系统将自动出牌或过牌'}</p></>}
               </div>
-              <div className="hand-actions"><button className="button button-outline" type="button" disabled={!canAct || !room.lastPlay} onClick={() => game.pass(room.revision, () => setSelected([]))}>过牌</button><button className={`button button-primary${manualTurn ? ' turn-play-button' : ''}`} type="button" disabled={!canAct || !activeSelection.length} onClick={() => game.play(room.revision, activeSelection, () => setSelected([]))}>出牌{activeSelection.length ? ` (${activeSelection.length})` : ''}</button></div>
+              <div className="hand-actions"><button className="button button-outline" type="button" disabled={!canAct || !room.lastPlay} onClick={() => game.pass(room.revision, () => setSelected([]))}>过牌</button><button className={`button button-primary${manualTurn && !mustPass ? ' turn-play-button' : ''}`} type="button" disabled={!canAct || mustPass || !activeSelection.length} onClick={() => game.play(room.revision, activeSelection, () => setSelected([]))}>出牌{!mustPass && activeSelection.length ? ` (${activeSelection.length})` : ''}</button></div>
             </header>
             <div className="hand-tools">{!ready ? <button className="auto-button" type="button" onClick={game.reconnect}>连接中 · 重连</button> : <button className="auto-button" type="button" aria-pressed={me?.autoPlay ?? false} disabled={busy} onClick={() => game.autoplay(!me?.autoPlay, () => setSelected([]))}><Icon name="clock" size={15}/>{me?.autoPlay ? '取消托管' : '开启托管'}</button>}{drawnCard && <span className="drawn-summary" role="status">新摸到：<strong>{cardName(drawnCard)}</strong></span>}</div>
             {error && !dialog && <p className="error" role="alert">{error}</p>}
-            {canAct && <p className="hand-hint" role="status">{playable.size ? '亮边的牌可单出或参与凑牌' : '没有能接的牌，可以过牌'}</p>}
-            <HandStrip hand={room.hand} drawnCardId={room.drawnCardId} playable={playable} selected={activeSelection} setSelected={setSelected} canSelect={ready && !me?.autoPlay}/>
+            {playable.size > 0 && <p className="hand-hint" role="status">亮边的牌可单出或参与凑牌</p>}
+            <HandStrip hand={room.hand} drawnCardId={room.drawnCardId} playable={playable} selected={mustPass ? [] : activeSelection} setSelected={setSelected} canSelect={ready && !me?.autoPlay && !mustPass}/>
           </section>}
           {room?.phase === 'finished' && <RoundResult room={room}/>}
         </div>

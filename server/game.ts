@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { bombMultiplier, deckCopies, MAX_PLAYERS, MIN_PLAYERS, SHAPE_LABELS, TURN_MS, type Card, type MatchScore, type Profile, type RoomView, type Session, type Settlement } from '../shared/protocol.js';
+import { AUTO_PASS_MS, bombMultiplier, deckCopies, MAX_PLAYERS, MIN_PLAYERS, SHAPE_LABELS, TURN_MS, type Card, type MatchScore, type Profile, type RoomView, type Session, type Settlement } from '../shared/protocol.js';
 import { NICKNAME_ERROR, normalizeNickname } from '../shared/nicknames.js';
-import { playableCardIds } from './bot.js';
+import { hasLegalMove, playableCardIds } from './bot.js';
 import { identifyPlay, shuffledDeck } from './rules.js';
 
 export type RoomMember = Profile & { id: string; token: string; connection: string | null };
@@ -85,9 +85,10 @@ export function viewFor(room: Room, member: RoomMember): RoomView {
   };
 }
 
-function setTurn(room: Room, playerId: string | null) {
-  room.turn = playerId;
-  room.turnDeadline = playerId === null ? null : Date.now() + TURN_MS;
+function setTurn(room: Room, player: Player | null) {
+  const mustPass = player && room.lastPlay && !hasLegalMove(player.hand, room.lastPlay.shape);
+  room.turn = player?.id ?? null;
+  room.turnDeadline = player ? Date.now() + (mustPass ? AUTO_PASS_MS : TURN_MS) : null;
   room.turnNudges = 0;
 }
 
@@ -114,7 +115,6 @@ export function startRound(room: Room, player: Player, revision: number) {
   room.revision++;
   room.deckSize = deck.length;
   room.deck = deck;
-  setTurn(room, leader.id);
   room.winner = null;
   room.lastPlay = null;
   room.lastDraw = null;
@@ -127,6 +127,7 @@ export function startRound(room: Room, player: Player, revision: number) {
     seat.drawnCardId = null;
   }
   leader.hand.push(deck.pop()!);
+  setTurn(room, leader);
   room.notice = `第 ${room.round} 局开始，${leader.name} 先出牌。`;
 }
 
@@ -194,7 +195,7 @@ export function playCards(room: Room, player: Player, data: { revision: number; 
     finishRound(room);
     room.notice = `${player.name} 率先出完手牌，赢得了这一局！`;
   } else {
-    setTurn(room, nextSeat(room, player.id).id);
+    setTurn(room, nextSeat(room, player.id));
     room.notice = `${player.name} ${automatic ? '自动' : ''}打出${SHAPE_LABELS[shape.kind]}。`;
   }
 }
@@ -208,7 +209,7 @@ export function passTurn(room: Room, player: Player, revision: number, automatic
   room.revision++;
   const next = nextSeat(room, player.id);
   if (next.id !== last.playerId) {
-    setTurn(room, next.id);
+    setTurn(room, next);
     room.notice = `${player.name} ${automatic ? '自动' : ''}过牌。`;
     return;
   }
@@ -230,7 +231,7 @@ export function passTurn(room: Room, player: Player, revision: number, automatic
       return;
     }
   }
-  setTurn(room, leader.id);
+  setTurn(room, leader);
   room.notice = leader === next ? `${drawNotice}，由${next.name}领出。` : `${drawNotice}；${next.name}只剩王，改由${leader.name}领出。`;
 }
 

@@ -2,6 +2,7 @@ export const DEFAULT_GAME_PORT = 3033;
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 6;
 export const TURN_MS = 15_000;
+export const AUTO_PASS_MS = 2_000;
 export const ROUND_OPTIONS = [1, 5, 10, 20] as const;
 export type RoundLimit = typeof ROUND_OPTIONS[number];
 export type MatchScore = Pick<Profile, 'name' | 'avatar'> & { playerId: string; score: number };

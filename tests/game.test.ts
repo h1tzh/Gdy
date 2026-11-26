@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bombMultiplier, TURN_MS, type Card } from '../shared/protocol.js';
+import { AUTO_PASS_MS, bombMultiplier, TURN_MS, type Card } from '../shared/protocol.js';
 import { addPlayer, createRoom, passTurn, playCards, removePlayer, startRound, viewFor } from '../server/game.js';
 
 function game(count = 3) {
@@ -208,6 +208,25 @@ test('回合有 15 秒；超时或托管状态下禁止手动操作，但允许�
   passTurn(room, b, room.revision, true);
   assert.equal(room.turn, a.id);
   assert.equal(viewFor(room, a).drawnCardId, a.hand.at(-1)?.id);
+});
+
+test('没有牌能接时只等 2 秒；有王凑成的炸弹或需要领出时仍等 15 秒', () => {
+  const { room, players: [a, b, c] } = game();
+  a.hand = cards(5, 9);
+  b.hand = cards(7, 10);
+  c.hand = cards(8, 8, 16);
+  function checkTurn(playerId: string, duration: number, action: () => void) {
+    const before = Date.now();
+    action();
+    assert.equal(room.turn, playerId);
+    assert(room.turnDeadline! >= before + duration && room.turnDeadline! <= Date.now() + duration);
+  }
+  checkTurn(b.id, AUTO_PASS_MS, () => playCards(room, a, { revision: room.revision, ids: [a.hand[0].id] }));
+  assert.deepEqual(viewFor(room, b).playableCardIds, []);
+  checkTurn(c.id, TURN_MS, () => passTurn(room, b, room.revision));
+  assert.deepEqual(viewFor(room, c).playableCardIds, c.hand.map(({ id }) => id));
+  checkTurn(a.id, TURN_MS, () => passTurn(room, c, room.revision));
+  assert.equal(room.lastPlay, null);
 });
 
 test('支持固定 1、5、10、20 局，最后一局才给出总榜并禁止再开局', () => {

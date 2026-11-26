@@ -37,6 +37,10 @@ function* moveGroups(hand: Card[], last?: Shape) {
   }
 }
 
+export function hasLegalMove(hand: Card[], last: Shape): boolean {
+  return !moveGroups(hand, last).next().done;
+}
+
 export function playableCardIds(hand: Card[], last?: Shape): string[] {
   const ids = new Set<string>();
   for (const { groups, size, jokers } of moveGroups(hand, last)) {

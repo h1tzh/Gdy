@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { io, type Socket } from 'socket.io-client';
 import { buildServer } from '../server/http.js';
-import { MAX_PLAYERS, type ClientEvents, type Result, type RoomView, type RoundLimit, type ServerEvents, type Session } from '../shared/protocol.js';
+import { AUTO_PASS_MS, MAX_PLAYERS, type ClientEvents, type Result, type RoomView, type RoundLimit, type ServerEvents, type Session } from '../shared/protocol.js';
 
 type Client = Socket<ServerEvents, ClientEvents>;
 function state(client: Client, predicate: (room: RoomView) => boolean, wait = 3_000) {
@@ -137,6 +137,31 @@ test('手动玩家超时后服务器代打；更新头像资料不会重置倒�
   assert(acted.serverTime >= room.turnDeadline! - 5);
   assert(acted.serverTime < room.turnDeadline! + 2000);
   assert(acted.hand.length < room.hand.length);
+});
+
+test('没有牌能接的手动玩家在 2 秒后由服务器过牌，按原规则补牌', { timeout: 8_000 }, async (t) => {
+  const { server, connect } = await fixture(t);
+  const host = await connect();
+  const guest = await connect();
+  const { session, guestSession, round } = await startFriendsRound(host, guest);
+  const table = server.sockets.sockets.get(host.id!)!.data.membership!.room;
+  table.players[0].hand = [{ id: 'lead', rank: 5, suit: 'hearts' }, { id: 'held', rank: 9, suit: 'spades' }];
+  table.players[1].hand = [{ id: 'jump', rank: 7, suit: 'clubs' }];
+
+  const guestTurn = state(guest, (view) => view.turn === guestSession.playerId);
+  const autoPassed = state(host, (view) => view.lastDraw?.playerId === session.playerId, AUTO_PASS_MS + 2000);
+  value(await host.timeout(2000).emitWithAck('play', { revision: round.revision, ids: ['lead'] }));
+  const waiting = await guestTurn;
+  assert.deepEqual(waiting.playableCardIds, []);
+  const remaining = waiting.turnDeadline! - waiting.serverTime;
+  assert(remaining > AUTO_PASS_MS - 100 && remaining <= AUTO_PASS_MS);
+  const passed = await autoPassed;
+  assert(passed.serverTime >= waiting.turnDeadline! - 5 && passed.serverTime < waiting.turnDeadline! + 1500);
+  assert.equal(passed.revision, waiting.revision + 1);
+  assert.equal(passed.turn, session.playerId);
+  assert.equal(passed.lastPlay, null);
+  assert.equal(passed.deckCount, waiting.deckCount - 1);
+  assert.deepEqual(passed.players.map(({ count }) => count), [2, 1]);
 });
 
 test('房主可移出在线或掉线的好友；旧座位失效且进行中的一局不计分', { timeout: 8_000 }, async (t) => {
