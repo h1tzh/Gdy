@@ -10,20 +10,26 @@ import './style.css';
 const seatLayouts = [[0], [0, 3], [0, 2, 4], [0, 1, 3, 5], [0, 1, 2, 4, 5], [0, 1, 2, 3, 4, 5]];
 const compactTable = '(max-width: 690px), (orientation: landscape) and (max-height: 540px) and (max-width: 1100px)';
 
-function TurnClock({ deadline, serverTime }: { deadline: number; serverTime: number }) {
-  const remaining = Math.max(0, Math.min(TURN_MS, deadline - serverTime));
-  const [seconds, setSeconds] = useState(() => Math.ceil(remaining / 1000));
+function useTurnSeconds(deadline: number | null, serverTime: number) {
+  const remaining = deadline === null ? 0 : Math.max(0, Math.min(TURN_MS, deadline - serverTime));
+  const [clock, setClock] = useState({ deadline, seconds: Math.ceil(remaining / 1000) });
   useEffect(() => {
+    if (deadline === null) return;
     const end = performance.now() + remaining;
-    const refresh = () => setSeconds(Math.max(0, Math.ceil((end - performance.now()) / 1000)));
+    let timer: number | undefined;
+    function refresh() {
+      const left = Math.max(0, end - performance.now());
+      const seconds = Math.ceil(left / 1000);
+      setClock((current) => current.deadline === deadline && current.seconds === seconds ? current : { deadline, seconds });
+      if (seconds > 0) timer = window.setTimeout(refresh, Math.max(10, left - (seconds - 1) * 1000));
+    }
     refresh();
-    const timer = window.setInterval(refresh, 100);
-    return () => window.clearInterval(timer);
+    return () => window.clearTimeout(timer);
   }, [deadline, serverTime, remaining]);
-  return <span className={`turn-clock ${seconds <= 5 ? 'turn-clock-low' : ''}`} aria-label={`剩余 ${seconds} 秒`}><Icon name="clock" size={15}/><b>{seconds}s</b></span>;
+  return clock.deadline === deadline ? clock.seconds : Math.ceil(remaining / 1000);
 }
 
-function Table({ room, reactions, onInvite, onReact, onReactionEnd, onNudge }: { room: RoomView | null; reactions: TableReaction[]; onInvite: () => void; onReact: (to: string) => void; onReactionEnd: (id: string) => void; onNudge?: (revision: number) => void }) {
+function Table({ room, seconds, reactions, onInvite, onReact, onReactionEnd, onNudge }: { room: RoomView | null; seconds: number; reactions: TableReaction[]; onInvite: () => void; onReact: (to: string) => void; onReactionEnd: (id: string) => void; onNudge?: (revision: number) => void }) {
   const myIndex = room?.players.findIndex((player) => player.id === room.you) ?? 0;
   const rotated = room ? [...room.players.slice(myIndex), ...room.players.slice(0, myIndex)] : [];
   const layout = seatLayouts[Math.max(0, rotated.length - 1)];
@@ -46,7 +52,7 @@ function Table({ room, reactions, onInvite, onReact, onReactionEnd, onNudge }: {
     {roundActive && turn && <div className={`turn-banner ${turn.id === room.you ? 'your-turn' : ''}`}>
       <Avatar seed={turn.avatar} size={25}/><strong>{turn.id === room.you ? '轮到你了' : `轮到 ${turn.name}`}</strong>
       {turn.autoPlay ? <small>托管中</small> : turn.id === room.you && room.turnNudges > 0 ? <small className="nudged-label" role="status">有人催牌</small> : null}
-      {room.turnDeadline != null && <TurnClock deadline={room.turnDeadline} serverTime={room.serverTime}/>}
+      {room.turnDeadline != null && <span className={`turn-clock ${seconds <= 5 ? 'turn-clock-low' : ''}`} aria-label={`剩余 ${seconds} 秒`}><Icon name="clock" size={15}/><b>{seconds}s</b></span>}
       {turn.id !== room.you && turn.online && !turn.bot && !turn.autoPlay && <button className="nudge-button" type="button" disabled={!onNudge} onClick={() => onNudge?.(room.revision)}>催牌</button>}
     </div>}
     <div className={`arena ${room ? 'arena-in-room' : ''}`}>
@@ -125,6 +131,18 @@ function Dialog({ title, children, close }: { title: string; children: ReactNode
   return <dialog ref={dialog} className="dialog" aria-label={title} onCancel={close} onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
     <div className="dialog-content"><div className="dialog-head"><h2>{title}</h2><button type="button" className="icon-button" onClick={close} aria-label="关闭弹窗"><Icon name="close" size={21}/></button></div>{children}</div>
   </dialog>;
+}
+
+function ReminderSettings({ preferences, updatePreference, close }: ReturnType<typeof useTurnReminders> & { close: () => void }) {
+  const supportsVibration = typeof navigator.vibrate === 'function';
+  const [testAccepted, setTestAccepted] = useState<boolean | null>(null);
+  return <Dialog title="提醒设置" close={close}>
+    <button className="setting-row" type="button" role="switch" aria-checked={preferences.sound} onClick={() => updatePreference('sound', !preferences.sound)}><span>出牌和催牌音效</span><span className="setting-switch" aria-hidden="true"/></button>
+    <button className="setting-row" type="button" role="switch" aria-checked={supportsVibration && preferences.vibration} disabled={!supportsVibration} onClick={() => { updatePreference('vibration', !preferences.vibration); setTestAccepted(null); }}><span>出牌和催牌震动</span><span className="setting-switch" aria-hidden="true"/></button>
+    <p className="dialog-hint">提醒设置保存在本浏览器。{supportsVibration ? '请保持游戏页面在前台。' : '此浏览器不支持网页震动，仍会显示文字提示。'}</p>
+    {supportsVibration && <button className="button button-outline full" type="button" disabled={!preferences.vibration} onClick={() => setTestAccepted(navigator.vibrate(350))}>试震</button>}
+    {testAccepted !== null && <p className="dialog-hint" role="status">{testAccepted ? '已发出试震请求。如果没感觉到，请检查系统震动、静音和勿扰设置。' : '浏览器未接受试震请求。请用手机浏览器直接打开游戏页面，保持在前台后重试。'}</p>}
+  </Dialog>;
 }
 
 function RuleDetails() {
@@ -264,8 +282,10 @@ function App() {
   const turnPlayer = room?.players.find((player) => player.id === room.turn);
   const practice = room?.mode === 'practice';
   const isTurn = room?.phase === 'playing' && room.turn === room.you;
-  const manualTurn = ready && isTurn && !me?.autoPlay && room ? `${room.code}:${room.you}:${room.revision}` : null;
-  const { preferences, updatePreference } = useTurnReminders(manualTurn, room?.turnNudges ?? 0);
+  const seconds = useTurnSeconds(room?.turnDeadline ?? null, room?.serverTime ?? 0);
+  const manualTurn = ready && isTurn && !me?.autoPlay ? `${room.code}:${room.you}:${room.revision}` : null;
+  const lowTime = seconds <= 5;
+  const reminders = useTurnReminders(manualTurn, seconds, room?.turnNudges ?? 0);
   const drawnCard = room?.hand.find((card) => card.id === room.drawnCardId);
   const canAct = ready && isTurn && !me?.autoPlay && !busy;
   const playable = new Set(canAct ? room?.playableCardIds : []);
@@ -348,10 +368,15 @@ function App() {
       <div className={`connection ${online && ready ? '' : 'connection-off'}`} role="status"><span className="status-dot"/>{online && ready ? '联机服务在线' : '正在连接'}{!ready && error && <button className="text-action" type="button" onClick={game.reconnect}>重连</button>}</div></section>
       <div className={`layout ${room ? 'in-room' : ''}`}>
         <div className="table-column">
-          <Table room={room} reactions={game.reactions} onInvite={copyInvite} onReactionEnd={game.clearReaction} onReact={(to) => openPlayerDialog(to, 'reaction')} onNudge={ready && !busy ? game.nudge : undefined}/>
+          <Table room={room} seconds={seconds} reactions={game.reactions} onInvite={copyInvite} onReactionEnd={game.clearReaction} onReact={(to) => openPlayerDialog(to, 'reaction')} onNudge={ready && !busy ? game.nudge : undefined}/>
           {room?.phase === 'playing' && <section className="panel hand-panel" aria-label="我的手牌">
-            <header className="hand-header"><div><h2>我的手牌 <small>{room.hand.length} 张</small></h2><p role="status">{!ready ? '正在重新连接牌桌…' : me?.autoPlay ? '托管中，系统会自动操作' : isTurn ? '轮到你了，点选或滑动选牌' : turnPlayer?.online ? '等待其他玩家出牌' : '当前玩家掉线，系统将自动出牌或过牌'}</p></div>
-            <div className="hand-actions"><button className="button button-outline" type="button" disabled={!canAct || !room.lastPlay} onClick={() => game.pass(room.revision, () => setSelected([]))}>过牌</button><button className="button button-primary" type="button" disabled={!canAct || !activeSelection.length} onClick={() => game.play(room.revision, activeSelection, () => setSelected([]))}>出牌{activeSelection.length ? ` (${activeSelection.length})` : ''}</button></div></header>
+            <header className="hand-header">
+              <div>{manualTurn ? <><h2 className={`hand-turn${lowTime ? ' hand-turn-low' : ''}`}><span role="status">轮到你出牌</span><small> · {seconds} 秒</small></h2>
+                {lowTime ? <p className="hand-turn-warning" role="status">即将自动{room.playableCardIds.length ? '出牌' : '过牌'}</p> : <p>点选或滑动选牌</p>}</>
+                : <><h2>我的手牌 <small>{room.hand.length} 张</small></h2><p role="status">{!ready ? '正在重新连接牌桌…' : me?.autoPlay ? '托管中，系统会自动操作' : turnPlayer?.online ? '等待其他玩家出牌' : '当前玩家掉线，系统将自动出牌或过牌'}</p></>}
+              </div>
+              <div className="hand-actions"><button className="button button-outline" type="button" disabled={!canAct || !room.lastPlay} onClick={() => game.pass(room.revision, () => setSelected([]))}>过牌</button><button className={`button button-primary${manualTurn ? ' turn-play-button' : ''}`} type="button" disabled={!canAct || !activeSelection.length} onClick={() => game.play(room.revision, activeSelection, () => setSelected([]))}>出牌{activeSelection.length ? ` (${activeSelection.length})` : ''}</button></div>
+            </header>
             <div className="hand-tools">{!ready ? <button className="auto-button" type="button" onClick={game.reconnect}>连接中 · 重连</button> : <button className="auto-button" type="button" aria-pressed={me?.autoPlay ?? false} disabled={busy} onClick={() => game.autoplay(!me?.autoPlay, () => setSelected([]))}><Icon name="clock" size={15}/>{me?.autoPlay ? '取消托管' : '开启托管'}</button>}{drawnCard && <span className="drawn-summary" role="status">新摸到：<strong>{cardName(drawnCard)}</strong></span>}</div>
             {error && !dialog && <p className="error" role="alert">{error}</p>}
             {canAct && <p className="hand-hint" role="status">{playable.size ? '亮边的牌可单出或参与凑牌' : '没有能接的牌，可以过牌'}</p>}
@@ -393,11 +418,7 @@ function App() {
       <footer className="page-footer"><span><SuitMark size={13}/> 干瞪眼 · 好友牌馆</span><span>少说废话，多出好牌。 <span className="footer-diamond">♦</span></span></footer>
     </main>
     {dialog === 'rules' && <Dialog title="游戏规则" close={close}><RuleDetails/></Dialog>}
-    {dialog === 'settings' && <Dialog title="提醒设置" close={close}>
-      <label className="setting-row"><span>出牌音效</span><input type="checkbox" role="switch" checked={preferences.sound} onChange={(event) => updatePreference('sound', event.target.checked)}/></label>
-      <label className="setting-row"><span>出牌和催牌震动</span><input type="checkbox" role="switch" checked={preferences.vibration} onChange={(event) => updatePreference('vibration', event.target.checked)}/></label>
-      <p className="dialog-hint">提醒设置保存在本浏览器。{typeof navigator.vibrate !== 'function' ? '此浏览器不支持网页震动，仍会显示文字提示。' : '震动仅在支持的设备上生效。'}</p>
-    </Dialog>}
+    {dialog === 'settings' && <ReminderSettings {...reminders} close={close}/>}
     {dialog === 'profile' && <Dialog title="编辑个人资料" close={close}><form onSubmit={changeProfile}><ProfileFields value={draft} onChange={setDraft} id="edit-name"/><p className="dialog-hint">昵称可以自己输入，也可以随机生成。点头像可以换另一种造型。</p>{error && <p className="error" role="alert">{error}</p>}<button className="button button-primary full" disabled={busy || Boolean(room && !ready)}>保存资料</button></form></Dialog>}
     {dialog === 'scores' && room?.finalScores && <Dialog title="最终记分板" close={close}>
       <p className="dialog-hint">本房 {room.roundsCompleted} 局已打完，以下是累计积分。</p>

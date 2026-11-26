@@ -194,7 +194,12 @@ label, .field-label { color: #dbded1; display: block; font-weight: 650; font-siz
 .hand-header { display: flex; justify-content: space-between; gap: 9px; align-items: center; }
 .hand-header h2 small, .score-panel h2 small { font-size: 11px; color: var(--gold); font-weight: 600; }
 .hand-header p { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.hand-turn { color: #ffd49f; }
+.hand-turn small { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hand-turn-low, .hand-turn-low small, .hand-header .hand-turn-warning { color: #ffb59a; }
+.hand-header .hand-turn-warning { font-weight: 750; }
 .hand-actions { display: flex; gap: 6px; }
+.turn-play-button { outline: 1px solid #e8a95e; outline-offset: 2px; animation: turn-play-flash .6s ease-out; }
 .hand-tools { display: flex; align-items: center; gap: 8px; justify-content: space-between; margin-top: 6px; }
 .auto-button { display: inline-flex; align-items: center; gap: 5px; min-height: 40px; padding: 4px 8px; border: 1px solid #425445; border-radius: 8px; background: #223127; color: #dce8d9; font-size: 12px; }
 .auto-button[aria-pressed="true"] { border-color: #b18452; background: #3d2f22; color: #ffcf94; }
@@ -263,11 +268,15 @@ button.playing-card:hover { border-color: var(--gold); }
 .reaction-picker .button { min-height: 51px; padding-inline: 5px; }
 .reaction-picker .button span { font-size: 23px; }
 .reaction-picker + .roster-kick { margin-top: 8px; }
-.setting-row { display: flex; align-items: center; justify-content: space-between; min-height: 49px; gap: 12px; border-bottom: 1px solid var(--edge); font-size: 14px; cursor: pointer; }
-.setting-row input { width: 21px; height: 21px; accent-color: var(--gold); cursor: pointer; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 49px; gap: 12px; padding: 5px 2px; border: 0; border-bottom: 1px solid var(--edge); background: transparent; color: inherit; font-size: 14px; text-align: start; }
+.setting-switch { flex: none; position: relative; width: 44px; height: 25px; border: 1px solid #6f8274; border-radius: 999px; background: #29372e; transition: background-color .16s, border-color .16s; }
+.setting-switch::before { content: ''; position: absolute; top: 3px; inset-inline-start: 3px; width: 17px; height: 17px; border-radius: 50%; background: #d0ded3; transition: transform .16s, background-color .16s; }
+.setting-row[aria-checked='true'] .setting-switch { border-color: #f5bd82; background: #eab278; }
+.setting-row[aria-checked='true'] .setting-switch::before { transform: translateX(19px); background: #35251b; }
 
 @keyframes draw-card { from { opacity: .25; transform: translateY(calc(var(--card-lift, 0px) - 22px)) rotate(-7deg) scale(.8); } to { opacity: 1; transform: translateY(var(--card-lift, 0px)); } }
 @keyframes draw-notice { from { opacity: .35; transform: translateY(-8px) scale(.94); } to { opacity: 1; transform: none; } }
+@keyframes turn-play-flash { from { box-shadow: 0 0 0 4px #ffc47e9c; } to { box-shadow: 0 0 0 4px #ffc47e00; } }
 @keyframes reaction-flight {
   0% { left: var(--from-x); top: var(--from-y); transform: translate(-50%, -50%) scale(.5) rotate(-18deg); opacity: .4; }
   18% { opacity: 1; }
@@ -394,6 +403,7 @@ button.playing-card:hover { border-color: var(--gold); }
   .live-room .hand-header { grid-area: 1 / 2; gap: 4px; }
   .live-room .hand-header h2 { font-size: 12px; }
   .live-room .hand-header p, .live-room .hand-hint { display: none; }
+  .live-room .hand-header .hand-turn-warning { display: block; margin-top: 1px; font-size: 10px; }
   .live-room .hand-actions .button, .live-room .auto-button { min-height: 36px; padding: 3px 7px; font-size: 12px; }
   .live-room .hand-tools { grid-area: 2 / 2; margin-top: 0; justify-content: flex-end; }
   .live-room .hand-scroll { grid-area: 1 / 1 / span 2; margin: 0; padding: 13px 0 0; }
@@ -406,6 +416,6 @@ button.playing-card:hover { border-color: var(--gold); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }
-  .drawn-card, .table-draw { animation: none !important; }
+  .drawn-card, .table-draw, .turn-play-button { animation: none !important; }
   .table-reaction { left: var(--to-x); top: var(--to-y); transform: translate(-50%, -50%); animation: reaction-fade .65s ease-in .3s both; }
 }

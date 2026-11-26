@@ -9,16 +9,22 @@ function loadPreferences() {
   } catch { return { sound: true, vibration: true }; }
 }
 
-function chime(context: AudioContext) {
-  const now = context.currentTime;
-  for (const [offset, frequency] of [[0, 660], [.1, 880]]) {
+const tones = {
+  turn: [[0, 660], [.1, 880]],
+  warning: [[0, 520]],
+  nudge: [[0, 880], [.09, 660]],
+} as const;
+
+function chime(context: AudioContext, kind: keyof typeof tones, delay = 0) {
+  const now = context.currentTime + delay;
+  for (const [offset, frequency] of tones[kind]) {
     const time = now + offset;
     const tone = context.createOscillator();
     const level = context.createGain();
     tone.type = 'sine';
     tone.frequency.value = frequency;
     level.gain.setValueAtTime(0, time);
-    level.gain.linearRampToValueAtTime(.12, time + .015);
+    level.gain.linearRampToValueAtTime(kind === 'warning' ? .075 : .12, time + .015);
     level.gain.exponentialRampToValueAtTime(.001, time + .15);
     tone.connect(level).connect(context.destination);
     tone.start(time);
@@ -26,10 +32,11 @@ function chime(context: AudioContext) {
   }
 }
 
-export function useTurnReminders(turn: string | null, nudges: number) {
+export function useTurnReminders(turn: string | null, seconds: number, nudges: number) {
   const [preferences, setPreferences] = useState(loadPreferences);
   const audio = useRef<AudioContext | null>(null);
   const lastTurn = useRef<string | null>(null);
+  const lastWarning = useRef<{ turn: string; second: number } | null>(null);
   const lastNudge = useRef<string | null>(null);
 
   function unlockAudio() {
@@ -57,20 +64,26 @@ export function useTurnReminders(turn: string | null, nudges: number) {
   }, []);
 
   useEffect(() => {
-    if (!turn) return;
-    if (lastTurn.current !== turn) {
-      lastTurn.current = turn;
-      if (!document.hidden) {
-        if (preferences.sound && audio.current?.state === 'running') chime(audio.current);
-        if (preferences.vibration) navigator.vibrate?.(120);
-      }
-    }
+    if (!turn || seconds <= 0) return;
+    const started = lastTurn.current !== turn;
+    const warning = seconds <= 5 && (lastWarning.current?.turn !== turn || seconds < lastWarning.current.second);
     const nudge = `${turn}:${nudges}`;
-    if (nudges > 0 && lastNudge.current !== nudge) {
-      lastNudge.current = nudge;
-      if (preferences.vibration && !document.hidden) navigator.vibrate?.([100, 65, 100]);
+    const nudged = nudges > 0 && lastNudge.current !== nudge;
+    if (started) lastTurn.current = turn;
+    if (warning) lastWarning.current = { turn, second: seconds };
+    if (nudged) lastNudge.current = nudge;
+    if (document.hidden) return;
+
+    if (preferences.sound && audio.current?.state === 'running') {
+      if (warning) chime(audio.current, 'warning');
+      else if (started) chime(audio.current, 'turn');
+      if (nudged) chime(audio.current, 'nudge', warning ? .16 : started ? .26 : 0);
     }
-  }, [turn, nudges, preferences]);
+    if (preferences.vibration) {
+      if (nudged) navigator.vibrate?.([100, 65, 100]);
+      else if (started) navigator.vibrate?.(120);
+    }
+  }, [turn, seconds, nudges, preferences]);
 
   function updatePreference(key: keyof typeof preferences, enabled: boolean) {
     if (key === 'sound' && enabled) unlockAudio();
