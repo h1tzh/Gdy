@@ -28,6 +28,8 @@ export type RoomView = {
   roundsCompleted: number;
   finalScores: MatchScore[] | null;
   you: string;
+  spectating: boolean;
+  spectatorCount: number;
   host: string;
   turn: string | null;
   turnDeadline: number | null;
@@ -66,6 +68,7 @@ export interface ClientEvents {
   react: (data: { to: string; kind: ReactionKind }, reply: Reply) => void;
   kick: (playerId: string, reply: Reply) => void;
   leave: (reply: Reply) => void;
+  leaveSpectator: (reply: Reply) => void;
 }
 
 export interface ServerEvents {

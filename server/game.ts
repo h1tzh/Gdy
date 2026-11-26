@@ -4,9 +4,11 @@ import { NICKNAME_ERROR, normalizeNickname } from '../shared/nicknames.js';
 import { playableCardIds } from './bot.js';
 import { identifyPlay, shuffledDeck } from './rules.js';
 
-export type Player = Profile & { id: string; token: string; bot: boolean; connection: string | null; offlineSince: number | null; autoPlay: boolean; hand: Card[]; drawnCardId: string | null; score: number; completedRound: boolean };
+export type RoomMember = Profile & { id: string; token: string; connection: string | null };
+export type Player = RoomMember & { bot: boolean; offlineSince: number | null; autoPlay: boolean; hand: Card[]; drawnCardId: string | null; score: number; completedRound: boolean };
+export type Spectator = RoomMember & { connection: string };
 export type Room = {
-  code: string; mode: RoomView['mode']; players: Player[]; phase: RoomView['phase']; revision: number; round: number; deck: Card[]; deckSize: number;
+  code: string; mode: RoomView['mode']; players: Player[]; spectators: Spectator[]; phase: RoomView['phase']; revision: number; round: number; deck: Card[]; deckSize: number;
   turn: string | null; turnDeadline: number | null; turnNudges: number; winner: string | null; lastPlay: RoomView['lastPlay']; lastDraw: RoomView['lastDraw']; passes: string[]; notice: string; updated: number;
   bombCount: number; settlement: Settlement[]; roundLimit: RoomView['roundLimit']; roundsCompleted: number; finalScores: RoomView['finalScores'];
   departedScores: MatchScore[]; revealedHands: RoomView['revealedHands'];
@@ -26,35 +28,55 @@ export function normalizeProfile(input: unknown): Profile {
 }
 
 export function createRoom(code: string, mode: RoomView['mode'] = 'friends', roundLimit: RoomView['roundLimit'] = mode === 'friends' ? 5 : null): Room {
-  return { code, mode, players: [], phase: 'lobby', revision: 0, round: 0, roundLimit, roundsCompleted: 0, finalScores: null, departedScores: [], deck: [], deckSize: 0, turn: null, turnDeadline: null, turnNudges: 0, winner: null, lastPlay: null, lastDraw: null, passes: [], bombCount: 0, settlement: [], revealedHands: [], notice: '房间已创建，邀请朋友来上桌。', updated: Date.now() };
+  return { code, mode, players: [], spectators: [], phase: 'lobby', revision: 0, round: 0, roundLimit, roundsCompleted: 0, finalScores: null, departedScores: [], deck: [], deckSize: 0, turn: null, turnDeadline: null, turnNudges: 0, winner: null, lastPlay: null, lastDraw: null, passes: [], bombCount: 0, settlement: [], revealedHands: [], notice: '房间已创建，邀请朋友来上桌。', updated: Date.now() };
+}
+
+function requireRoomSpace(room: Room) {
+  requireGame(!room.finalScores, '本房已打完，不能继续加入。');
+  requireGame(room.players.length + room.spectators.length < MAX_PLAYERS, '房间已满（含观战），最多 6 人。');
+}
+
+function newMember(profile: Profile) {
+  return { ...profile, id: randomUUID(), token: randomBytes(24).toString('base64url') };
+}
+
+function asPlayer(member: RoomMember): Player {
+  return { ...member, bot: member.connection === null, offlineSince: null, autoPlay: false, hand: [], drawnCardId: null, score: 0, completedRound: false };
 }
 
 export function addPlayer(room: Room, profile: Profile, connection: string | null): Player {
-  requireGame(!room.finalScores, '本房已打完，不能继续加入。');
+  requireRoomSpace(room);
   requireGame(room.phase !== 'playing', '牌局已经开始，等这一局结束再加入。');
-  requireGame(room.players.length < MAX_PLAYERS, '牌桌已满，最多 6 人。');
-  const player: Player = { ...profile, id: randomUUID(), token: randomBytes(24).toString('base64url'), bot: connection === null, connection, offlineSince: null, autoPlay: false, hand: [], drawnCardId: null, score: 0, completedRound: false };
+  const player = asPlayer({ ...newMember(profile), connection });
   if (room.players.length) room.notice = `${player.name} 加入了牌桌。`;
   room.players.push(player);
   room.revision++;
   return player;
 }
 
-export function sessionFor(room: Room, player: Player): Session {
-  return { code: room.code, playerId: player.id, token: player.token };
+export function addSpectator(room: Room, profile: Profile, connection: string): Spectator {
+  requireRoomSpace(room);
+  const spectator = { ...newMember(profile), connection };
+  room.spectators.push(spectator);
+  return spectator;
+}
+
+export function sessionFor(room: Room, member: RoomMember): Session {
+  return { code: room.code, playerId: member.id, token: member.token };
 }
 
 function sortedHand(hand: Card[]) { return hand.slice().sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id)); }
 
 export function isAutoPlaying(player: Player) { return player.autoPlay || player.offlineSince !== null; }
 
-export function viewFor(room: Room, player: Player): RoomView {
+export function viewFor(room: Room, member: RoomMember): RoomView {
+  const player = room.players.find((seat) => seat === member);
   const { code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount } = room;
   return {
     code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount,
-    drawnCardId: player.drawnCardId, serverTime: Date.now(),
-    deckCount: room.deck.length, you: player.id, host: room.players[0].id, hand: sortedHand(player.hand),
-    playableCardIds: phase === 'playing' && turn === player.id && !isAutoPlaying(player) ? playableCardIds(player.hand, lastPlay?.shape) : [],
+    drawnCardId: player?.drawnCardId ?? null, serverTime: Date.now(),
+    deckCount: room.deck.length, you: member.id, spectating: !player, spectatorCount: room.spectators.length, host: room.players[0].id, hand: player ? sortedHand(player.hand) : [],
+    playableCardIds: player && phase === 'playing' && turn === player.id && !isAutoPlaying(player) ? playableCardIds(player.hand, lastPlay?.shape) : [],
     revealedHands: phase === 'finished' ? room.revealedHands : [],
     players: room.players.map((seat) => {
       const { id, name, avatar, bot, connection, hand, score } = seat;
@@ -81,8 +103,10 @@ export function startRound(room: Room, player: Player, revision: number) {
   requireGame(room.players[0] === player, '只有房主可以开局。');
   requireGame(room.phase !== 'playing', '牌局已经开始。');
   requireGame(!room.finalScores, '本房已打完，请创建新房。');
-  requireGame(room.players.length >= MIN_PLAYERS, '至少需要 2 位玩家才能开局。');
+  requireGame(room.players.length + room.spectators.length >= MIN_PLAYERS, '至少需要 2 位玩家才能开局。');
   requireGame(room.players.every((seat) => seat.bot || seat.connection), '等所有玩家上线再开局。');
+  // 观战身份直到下次发牌才转为座位，期间断线不保留名额。
+  room.players.push(...room.spectators.splice(0).map(asPlayer));
   const leader = room.players.find((seat) => seat.id === room.winner) ?? player;
   const deck = shuffledDeck(deckCopies(room.players.length));
   room.phase = 'playing';

@@ -190,7 +190,10 @@ label, .field-label { color: #dbded1; display: block; font-weight: 650; font-siz
 .play-author span { flex: none; font-size: 10px; color: #a5d4ca; }
 .table-reaction { position: absolute; left: var(--from-x); top: var(--from-y); z-index: 5; pointer-events: none; font-size: clamp(28px, 5vw, 46px); filter: drop-shadow(0 5px 4px #0a1910c0); animation: reaction-flight 1.05s ease-in-out both; }
 .winner-label { background: #283126; border: 1px solid #a78958; border-radius: 99px; padding: 5px 9px; font-weight: 750; max-width: 100%; overflow-wrap: anywhere; }
-.hand-panel, .score-panel { padding: 14px 17px; }
+.hand-panel, .score-panel, .spectator-panel { padding: 14px 17px; }
+.spectator-heading { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.spectator-heading p { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.spectator-heading .button { flex: none; }
 .hand-header { display: flex; justify-content: space-between; gap: 9px; align-items: center; }
 .hand-header h2 small, .score-panel h2 small { font-size: 11px; color: var(--gold); font-weight: 600; }
 .hand-header p { color: var(--muted); font-size: 12px; margin-top: 4px; }

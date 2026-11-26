@@ -104,5 +104,6 @@ export function useGame() {
     react: (to: string, kind: ReactionKind, done: () => void) => act(() => request().emitWithAck('react', { to, kind }), done),
     kick: (playerId: string, done: () => void) => act(() => request().emitWithAck('kick', playerId), done),
     leave: (done: () => void) => act(() => request().emitWithAck('leave'), () => { clear(); done(); }),
+    leaveSpectator: () => act(() => request().emitWithAck('leaveSpectator'), clear),
   };
 }
