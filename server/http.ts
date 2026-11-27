@@ -5,7 +5,7 @@ import express from 'express';
 import { Server } from 'socket.io';
 import { MAX_PLAYERS, REACTIONS, ROUND_OPTIONS, type ClientEvents, type Result, type RoundLimit, type ServerEvents, type Session } from '../shared/protocol.js';
 import { chooseMove } from './bot.js';
-import { addPlayer, addSpectator, createRoom, GameError, isAutoPlaying, normalizeProfile, nudgeTurn, passTurn, playCards, removePlayer, requireGame, sessionFor, startRound, viewFor, type Room, type RoomMember, type Spectator } from './game.js';
+import { addPlayer, addSpectator, createRoom, GameError, isAutoPlaying, normalizeProfile, nudgeTurn, passTurn, playCards, removePlayer, requireGame, restartMatch, sessionFor, setPrepared, startIfPrepared, startRound, viewFor, type Room, type RoomMember, type Spectator } from './game.js';
 
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const ROOM_TTL = 20 * 60_000;
@@ -23,6 +23,7 @@ export function buildServer() {
   const turnTimers = new Map<Room, { timer: NodeJS.Timeout; revision: number; quick: boolean }>();
 
   function publish(room: Room) {
+    startIfPrepared(room);
     room.updated = Date.now();
     for (const member of [...room.players, ...room.spectators]) {
       if (member.connection) io.to(member.connection).emit('state', viewFor(room, member));
@@ -168,9 +169,21 @@ export function buildServer() {
       Object.assign(membership.member, normalizeProfile(profile));
       publish(membership.room);
     }));
+    socket.on('prepare', (data, reply) => handle(reply, () => {
+      const membership = connectedMember();
+      requireGame(membership, '你还没有加入牌桌。');
+      setPrepared(membership.room, membership.member, data);
+      publish(membership.room);
+    }));
     socket.on('start', (revision, reply) => handle(reply, () => {
       const { room, player } = currentPlayer();
+      requireGame(room.mode === 'practice', '好友房全员准备后会自动开局。');
       startRound(room, player, revision);
+      publish(room);
+    }));
+    socket.on('restart', (revision, reply) => handle(reply, () => {
+      const { room, player } = currentPlayer();
+      restartMatch(room, player, revision);
       publish(room);
     }));
     socket.on('play', (data, reply) => handle(reply, () => {

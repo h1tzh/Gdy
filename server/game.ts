@@ -4,13 +4,13 @@ import { NICKNAME_ERROR, normalizeNickname } from '../shared/nicknames.js';
 import { hasLegalMove, playableCardIds } from './bot.js';
 import { identifyPlay, shuffledDeck } from './rules.js';
 
-export type RoomMember = Profile & { id: string; token: string; connection: string | null };
+export type RoomMember = Profile & { id: string; token: string; connection: string | null; prepared: boolean };
 export type Player = RoomMember & { bot: boolean; offlineSince: number | null; autoPlay: boolean; hand: Card[]; drawnCardId: string | null; score: number; completedRound: boolean };
 export type Spectator = RoomMember & { connection: string };
 export type Room = {
   code: string; mode: RoomView['mode']; players: Player[]; spectators: Spectator[]; phase: RoomView['phase']; revision: number; round: number; deck: Card[]; deckSize: number;
   turn: string | null; turnDeadline: number | null; turnNudges: number; winner: string | null; lastPlay: RoomView['lastPlay']; lastDraw: RoomView['lastDraw']; passes: string[]; notice: string; updated: number;
-  bombCount: number; settlement: Settlement[]; roundLimit: RoomView['roundLimit']; roundsCompleted: number; finalScores: RoomView['finalScores'];
+  bombCount: number; settlement: Settlement[]; matchNumber: number; roundLimit: RoomView['roundLimit']; roundsCompleted: number; finalScores: RoomView['finalScores'];
   departedScores: MatchScore[]; revealedHands: RoomView['revealedHands'];
 };
 
@@ -28,7 +28,7 @@ export function normalizeProfile(input: unknown): Profile {
 }
 
 export function createRoom(code: string, mode: RoomView['mode'] = 'friends', roundLimit: RoomView['roundLimit'] = mode === 'friends' ? 5 : null): Room {
-  return { code, mode, players: [], spectators: [], phase: 'lobby', revision: 0, round: 0, roundLimit, roundsCompleted: 0, finalScores: null, departedScores: [], deck: [], deckSize: 0, turn: null, turnDeadline: null, turnNudges: 0, winner: null, lastPlay: null, lastDraw: null, passes: [], bombCount: 0, settlement: [], revealedHands: [], notice: '房间已创建，邀请朋友来上桌。', updated: Date.now() };
+  return { code, mode, players: [], spectators: [], phase: 'lobby', revision: 0, matchNumber: 1, round: 0, roundLimit, roundsCompleted: 0, finalScores: null, departedScores: [], deck: [], deckSize: 0, turn: null, turnDeadline: null, turnNudges: 0, winner: null, lastPlay: null, lastDraw: null, passes: [], bombCount: 0, settlement: [], revealedHands: [], notice: '房间已创建，邀请朋友来上桌。', updated: Date.now() };
 }
 
 function requireRoomSpace(room: Room) {
@@ -37,7 +37,7 @@ function requireRoomSpace(room: Room) {
 }
 
 function newMember(profile: Profile) {
-  return { ...profile, id: randomUUID(), token: randomBytes(24).toString('base64url') };
+  return { ...profile, id: randomUUID(), token: randomBytes(24).toString('base64url'), prepared: false };
 }
 
 function asPlayer(member: RoomMember): Player {
@@ -71,17 +71,19 @@ export function isAutoPlaying(player: Player) { return player.autoPlay || player
 
 export function viewFor(room: Room, member: RoomMember): RoomView {
   const player = room.players.find((seat) => seat === member);
-  const { code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount } = room;
+  const { code, mode, phase, revision, matchNumber, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount } = room;
   return {
-    code, mode, phase, revision, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount,
+    code, mode, phase, revision, matchNumber, round, roundLimit, roundsCompleted, finalScores, turn, turnDeadline, turnNudges, winner, lastPlay, lastDraw, passes, notice, deckSize, settlement, bombCount,
     drawnCardId: player?.drawnCardId ?? null, serverTime: Date.now(),
-    deckCount: room.deck.length, you: member.id, spectating: !player, spectatorCount: room.spectators.length, host: room.players[0].id, hand: player ? sortedHand(player.hand) : [],
+    deckCount: room.deck.length, you: member.id, youPrepared: member.prepared, spectating: !player, spectatorCount: room.spectators.length,
+    preparedSpectators: room.spectators.filter((spectator) => spectator.prepared).length, host: room.players[0].id, hand: player ? sortedHand(player.hand) : [],
     playableCardIds: player && phase === 'playing' && turn === player.id && !isAutoPlaying(player) ? playableCardIds(player.hand, lastPlay?.shape) : [],
     revealedHands: phase === 'finished' ? room.revealedHands : [],
     players: room.players.map((seat) => {
-      const { id, name, avatar, bot, connection, hand, score } = seat;
-      return { id, name, avatar, bot, autoPlay: isAutoPlaying(seat), online: bot || Boolean(connection), count: hand.length, score };
+      const { id, name, avatar, bot, connection, prepared, hand, score } = seat;
+      return { id, name, avatar, bot, prepared, autoPlay: isAutoPlaying(seat), online: bot || Boolean(connection), count: hand.length, score };
     }),
+    spectators: room.spectators.map(({ id, name, avatar, prepared }) => ({ id, name, avatar, prepared })),
   };
 }
 
@@ -99,32 +101,84 @@ export function nudgeTurn(room: Room, player: Player, revision: number) {
   room.turnNudges++;
 }
 
+export function setPrepared(room: Room, member: RoomMember, data: { revision: number; prepared: boolean }) {
+  requireGame(room.revision === data?.revision, '牌桌有更新，请再试一次。');
+  requireGame(room.mode === 'friends' && room.phase !== 'playing' && !room.finalScores, '只能在好友房等待开局时准备。');
+  requireGame(typeof data.prepared === 'boolean', '无效的准备状态。');
+  member.prepared = data.prepared;
+}
+
+function clearRound(room: Room) {
+  setTurn(room, null);
+  room.winner = room.lastPlay = room.lastDraw = null;
+  room.deck = [];
+  room.deckSize = 0;
+  room.passes = [];
+  room.bombCount = 0;
+  room.settlement = [];
+  room.revealedHands = [];
+  for (const seat of room.players) {
+    seat.hand = [];
+    seat.drawnCardId = null;
+  }
+}
+
+export function restartMatch(room: Room, player: Player, revision: number) {
+  requireGame(room.revision === revision, '牌桌有更新，请再试一次。');
+  requireGame(room.players[0] === player, '只有房主可以重开。');
+  requireGame(room.mode === 'friends' && room.phase === 'finished' && room.finalScores, '整场打完后才能重开。');
+  room.phase = 'lobby';
+  room.revision++;
+  room.matchNumber++;
+  room.round = room.roundsCompleted = 0;
+  room.finalScores = null;
+  room.departedScores = [];
+  clearRound(room);
+  for (const seat of room.players) {
+    seat.score = 0;
+    seat.completedRound = false;
+    seat.prepared = false;
+  }
+  for (const spectator of room.spectators) spectator.prepared = false;
+  room.notice = '房主已重开，请准备下一场。';
+}
+
+function roundStartBlock(room: Room) {
+  if (room.phase === 'playing') return '牌局已经开始。';
+  if (room.finalScores) return '本房已打完，请先重开。';
+  if (!room.players.length || room.players.length + room.spectators.filter((spectator) => spectator.prepared).length < MIN_PLAYERS) return '至少需要 2 位玩家才能开局。';
+  if (room.players.some((seat) => !seat.bot && !seat.connection)) return '等所有玩家上线再开局。';
+  if (room.mode === 'friends' && room.players.some((seat) => !seat.bot && !seat.prepared)) return '等所有参赛者准备后再开局。';
+  return null;
+}
+
 export function startRound(room: Room, player: Player, revision: number) {
   requireGame(room.revision === revision, '牌桌有更新，请再试一次。');
   requireGame(room.players[0] === player, '只有房主可以开局。');
-  requireGame(room.phase !== 'playing', '牌局已经开始。');
-  requireGame(!room.finalScores, '本房已打完，请创建新房。');
-  requireGame(room.players.length + room.spectators.length >= MIN_PLAYERS, '至少需要 2 位玩家才能开局。');
-  requireGame(room.players.every((seat) => seat.bot || seat.connection), '等所有玩家上线再开局。');
-  // 观战身份直到下次发牌才转为座位，期间断线不保留名额。
-  room.players.push(...room.spectators.splice(0).map(asPlayer));
-  const leader = room.players.find((seat) => seat.id === room.winner) ?? player;
+  const blocked = roundStartBlock(room);
+  if (blocked) throw new GameError(blocked);
+  dealRound(room);
+}
+
+export function startIfPrepared(room: Room) {
+  if (room.mode === 'friends' && !roundStartBlock(room)) dealRound(room);
+}
+
+function dealRound(room: Room) {
+  const joining = room.spectators.filter((spectator) => spectator.prepared);
+  room.players.push(...joining.map(asPlayer));
+  room.spectators = room.spectators.filter((spectator) => !spectator.prepared);
+  const leader = room.players.find((seat) => seat.id === room.winner) ?? room.players[0];
+  clearRound(room);
   const deck = shuffledDeck(deckCopies(room.players.length));
   room.phase = 'playing';
   room.round = room.roundsCompleted + 1;
   room.revision++;
   room.deckSize = deck.length;
   room.deck = deck;
-  room.winner = null;
-  room.lastPlay = null;
-  room.lastDraw = null;
-  room.passes = [];
-  room.bombCount = 0;
-  room.settlement = [];
-  room.revealedHands = [];
   for (const seat of room.players) {
     seat.hand = deck.splice(-5);
-    seat.drawnCardId = null;
+    seat.prepared = false;
   }
   leader.hand.push(deck.pop()!);
   setTurn(room, leader);
@@ -242,17 +296,7 @@ export function removePlayer(room: Room, player: Player, removed = false) {
   if (room.phase === 'playing') {
     room.phase = 'lobby';
     room.round = room.roundsCompleted;
-    setTurn(room, null);
-    room.winner = room.lastPlay = room.lastDraw = null;
-    room.deck = [];
-    room.deckSize = 0;
-    room.passes = [];
-    room.bombCount = 0;
-    room.settlement = [];
-    for (const seat of room.players) {
-      seat.hand = [];
-      seat.drawnCardId = null;
-    }
+    clearRound(room);
     room.notice = `${player.name} ${removed ? '被房主移出房间' : '离开了房间'}，本局取消。`;
   } else {
     room.notice = `${player.name} ${removed ? '被房主移出房间' : '离开了牌桌'}。`;

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { bombMultiplier, cardRank, deckCopies, MAX_PLAYERS, REACTIONS, ROUND_OPTIONS, SHAPE_LABELS, TURN_MS, type Profile, type RoomView, type RoundLimit, type TableReaction } from '../shared/protocol.js';
+import { bombMultiplier, cardRank, deckCopies, MAX_PLAYERS, MIN_PLAYERS, REACTIONS, ROUND_OPTIONS, SHAPE_LABELS, TURN_MS, type Profile, type RoomView, type RoundLimit, type TableReaction } from '../shared/protocol.js';
 import { MAX_NICKNAME_LENGTH, NICKNAME_ERROR, normalizeNickname, randomNickname } from '../shared/nicknames.js';
 import { inviteCode, inviteLink, loadProfile, saveProfile, useGame } from './connection.js';
 import { useTurnReminders } from './turn-reminders.js';
@@ -51,7 +51,7 @@ function Table({ room, seconds, reactions, onInvite, onReact, onReactionEnd, onN
     </header>
     {roundActive && turn && <div className={`turn-banner ${turn.id === room.you ? 'your-turn' : ''}`}>
       <Avatar seed={turn.avatar} size={25}/><strong>{turn.id === room.you ? '轮到你了' : `轮到 ${turn.name}`}</strong>
-      {turn.autoPlay ? <small>托管中</small> : turn.id === room.you && room.turnNudges > 0 ? <small className="nudged-label" role="status">有人催牌</small> : null}
+      {turn.autoPlay ? <small>{turn.online ? '托管中' : '掉线托管'}</small> : turn.id === room.you && room.turnNudges > 0 ? <small className="nudged-label" role="status">有人催牌</small> : null}
       {room.turnDeadline != null && <span className={`turn-clock ${seconds <= 5 ? 'turn-clock-low' : ''}`} aria-label={`剩余 ${seconds} 秒`}><Icon name="clock" size={15}/><b>{seconds}s</b></span>}
       {!room.spectating && turn.id !== room.you && turn.online && !turn.bot && !turn.autoPlay && <button className="nudge-button" type="button" disabled={!onNudge} onClick={() => onNudge?.(room.revision)}>催牌</button>}
     </div>}
@@ -65,7 +65,7 @@ function Table({ room, seconds, reactions, onInvite, onReact, onReactionEnd, onN
           {player ? <>
             {!onReact || room?.you === player.id ? <div className="seat-portrait">{portrait}</div> : <button type="button" className="seat-portrait seat-action" aria-label={`和${player.name}互动`} title={`和${player.name}互动`} onClick={() => onReact(player.id)}>{portrait}</button>}
             <span className="seat-name" title={player.name}>{player.name}{room?.you === player.id ? ' · 我' : ''}</span>
-            {(roundActive || finished) && <span className="seat-count">{!player.online ? (roundActive ? '掉线托管' : '已掉线') : room?.passes.includes(player.id) ? '过牌' : `${player.count} 张`}</span>}
+            {(roundActive || finished) && <span className="seat-count">{!player.online ? (roundActive ? '掉线托管' : '已掉线') : room?.passes.includes(player.id) ? '过牌' : `${player.count} 张`}{player.online && !player.bot && player.autoPlay && <b className="auto-status" title="托管中"> · 托管</b>}</span>}
           </> : <><span className="seat-empty"><Icon name="plus" size={18}/></span><span className="seat-name">空座</span></>}
         </div>;
       })}
@@ -147,7 +147,7 @@ function ReminderSettings({ preferences, updatePreference, close }: ReturnType<t
 
 function RuleDetails() {
   return <div className="rule-details">
-    <section><h3>01 / 开局</h3><p>2–4 人用 1 副牌（54 张），5–6 人用 2 副牌（108 张）。每人发 5 张，领出者多拿 1 张。首局房主领出，下一局由上局赢家领出。</p></section>
+    <section><h3>01 / 开局</h3><p>好友房每局开始前，所有参赛者（包括房主）都要点准备，准备齐后自动开局。2–4 人用 1 副牌（54 张），5–6 人用 2 副牌（108 张）。每人发 5 张，领出者多拿 1 张。首局房主领出，下一局由上局赢家领出。</p></section>
     <section><h3>02 / 接牌</h3><p>普通牌必须同牌型、同张数，而且刚好大一级。比如单 6 接单 5，对 8 接对 7，顺子 456 接 345。单 2 能压更小的任意单张，22 能压更小的任意对子。顺子至少 3 张，连对至少 2 对，2 不参与顺子或连对。</p><p>3 或 4 张同点数是炸弹，可以压任何普通牌，不受刚好大一级的限制。炸弹先比张数，四张大于三张；同张数再比点数，所以 444 和 888 都能压 333。</p></section>
     <section><h3>03 / 大小王</h3><p>王只能和普通牌一起凑牌，不能单出，也没有王炸。</p></section>
     <section><h3>04 / 过牌与补牌</h3><p>其他人都过牌后，只有最后成功出牌的人从公共牌堆摸一张，然后由他重新领出。底牌用完则直接领出。若领出者只剩王，就顺延给下一位能领出的玩家；若全桌只剩王，则流局不计分。</p></section>
@@ -294,7 +294,11 @@ function App() {
   const playable = new Set(canAct ? room?.playableCardIds : []);
   const isHost = Boolean(room && room.host === room.you);
   const canKick = !practice && isHost && target && target.id !== room?.you && !target.bot;
-  const canStart = Boolean(room && occupantCount >= 2 && room.players.every((player) => player.online));
+  const waitingToStart = room && room.phase !== 'playing' && !room.finalScores;
+  const prepareHint = room && (!room.youPrepared ? '每局都要准备，全员准备后自动开局。'
+    : room.players.length + room.preparedSpectators < MIN_PLAYERS ? '已准备，等待其他玩家入座…'
+    : room.players.some((player) => !player.online) ? '已准备，等待掉线玩家上线…' : '已准备，等待其他玩家准备…');
+  const scoresKey = room?.finalScores ? `${room.code}:${room.matchNumber}` : null;
   const activeSelection = selected.filter((id) => room?.hand.some((card) => card.id === id));
   const close = () => setDialog(null);
   const confirmLeave = () => { game.setError(''); setDialog('leave'); };
@@ -311,11 +315,13 @@ function App() {
     if (room?.phase === 'finished' && !room.finalScores) document.getElementById('round-result')?.scrollIntoView();
   }, [room?.phase, room?.round, Boolean(room?.finalScores)]);
   useEffect(() => {
-    if (room?.finalScores && shownScores.current !== room.code) {
-      shownScores.current = room.code;
+    if (!scoresKey) {
+      setDialog((current) => current === 'scores' ? null : current);
+    } else if (shownScores.current !== scoresKey) {
+      shownScores.current = scoresKey;
       setDialog('scores');
     }
-  }, [room?.code, room?.finalScores]);
+  }, [scoresKey]);
   useEffect(() => { if (copied) { const timer = setTimeout(() => setCopied(false), 2200); return () => clearTimeout(timer); } }, [copied]);
 
   function validateNickname(input: Profile, id: string): Profile | null {
@@ -362,6 +368,8 @@ function App() {
     catch { setDialog('invite'); }
   }
 
+  const prepareButton = room && waitingToStart && !practice && <button className={`button ${room.youPrepared ? 'button-outline' : 'button-primary'} full`} type="button" disabled={!ready || busy} onClick={() => game.prepare(room.revision, !room.youPrepared)}><Icon name="check" size={17}/>{room.youPrepared ? '取消准备' : '准备'}</button>;
+
   return <>
     <header className="topbar"><div className="shell topbar-inner">
       <div className="brand"><span className="brand-icon"><SuitMark size={25}/></span><div><strong>干瞪眼</strong><span>THE CARD CLUB</span></div></div>
@@ -374,7 +382,8 @@ function App() {
         <div className="table-column">
           <Table room={room} seconds={seconds} reactions={game.reactions} onInvite={copyInvite} onReactionEnd={game.clearReaction} onReact={spectating ? undefined : (to) => openPlayerDialog(to, 'reaction')} onNudge={ready && !busy ? game.nudge : undefined}/>
           {room?.spectating && <section className="panel spectator-panel" aria-label="观战中">
-            <div className="spectator-heading"><div><h2>观战中</h2><p>{!ready ? '正在重新连接…' : room.finalScores ? '本房已打完，可以查看结算。' : room.phase !== 'playing' ? '房主开局后，你将自动入座。' : room.round === room.roundLimit ? '这是最后一局，结束后可查看结算。' : '本局只能观看，留在房间可参加下一局。'}</p></div><button type="button" className="button button-outline" disabled={!ready || busy} onClick={game.leaveSpectator}><Icon name="exit" size={16}/>退出观战</button></div>
+            <div className="spectator-heading"><div><h2>观战中</h2><p>{!ready ? '正在重新连接…' : room.finalScores ? '本场已打完，可以查看结算或等待房主重开。' : waitingToStart ? (room.youPrepared ? '已准备，开局后自动入座。' : '点「准备」参加下一局，不准备可继续观战。') : '本局只能观看，结算后可准备参加下一局。'}</p></div><button type="button" className="button button-outline" disabled={!ready || busy} onClick={game.leaveSpectator}><Icon name="exit" size={16}/>退出观战</button></div>
+            {prepareButton && <div className="spectator-prepare">{prepareButton}</div>}
             {error && !dialog && <p className="error" role="alert">{error}</p>}
           </section>}
           {room?.phase === 'playing' && !spectating && <section className="panel hand-panel" aria-label="我的手牌">
@@ -415,10 +424,32 @@ function App() {
             <div className="aside-heading"><div className="mini-label">{practice ? 'PRACTICE ROOM' : 'PRIVATE ROOM'}</div><h2>{practice ? '练习信息' : '房间信息'}</h2><p>{practice ? '机器人会自动接牌或过牌。' : '把房间码或链接分享给朋友。'}</p></div>
             {!practice && !room.finalScores && <button type="button" className="share-code" onClick={copyInvite} title="复制邀请链接"><strong>{room.code}</strong><span><Icon name={copied ? 'check' : 'copy'} size={17}/>{copied ? '已复制' : '复制邀请'}</span></button>}
             {room.roundLimit && <p className="match-progress">已完成 <b>{room.roundsCompleted} / {room.roundLimit}</b> 局</p>}
-            <div className="room-players"><div className="roster-title">玩家 <span>{room.spectatorCount > 0 && `含 ${room.spectatorCount} 人观战 · `}{occupantCount} / {MAX_PLAYERS}</span></div>{room.players.map((player) => <div className="roster-row" key={player.id}><Avatar seed={player.avatar} size={30}/><span>{player.name}</span>{player.bot && <small>机器人</small>}{!practice && player.id === room.host && <small>房主</small>}{!player.online && <small>{room.phase === 'playing' ? '掉线托管' : '掉线'}</small>}<small className="wins" title="累计积分">{player.score > 0 ? '+' : ''}{player.score} 分</small>{isHost && !practice && player.id !== room.you && !player.bot && <button className="roster-kick" type="button" aria-label={`移出 ${player.name}`} disabled={!ready || busy} onClick={() => openPlayerDialog(player.id, 'kick')}>移出</button>}</div>)}</div>
-            {room.finalScores ? <button className="button button-primary full" type="button" onClick={() => setDialog('scores')}><Icon name="trophy" size={17}/>查看记分板</button>
-              : room.phase !== 'playing' && !spectating && (isHost ? <><button className="button button-primary full" type="button" disabled={!ready || busy || !canStart} onClick={() => game.start(room.revision)}><Icon name="play" size={17}/>{room.phase === 'finished' ? '下一局' : '开始游戏'}</button>{!canStart && <p className="waiting-text">{occupantCount < 2 ? '至少 2 人才能开局' : '等所有玩家上线后开局'}</p>}</> : <p className="waiting-text">等待房主{room.phase === 'finished' ? '开始下一局' : '开始游戏'}…</p>)}
-            {room.phase === 'lobby' && !spectating && error && !dialog && <p className="error" role="alert">{error}</p>}
+            <div className="room-players">
+              <div className="roster-title">玩家 <span>{practice ? '' : '房间 '}{occupantCount} / {MAX_PLAYERS}</span></div>
+              {room.players.map((player) => <div className="roster-row" key={player.id}>
+                <Avatar seed={player.avatar} size={30}/><span>{player.name}</span>{player.bot && <small>机器人</small>}{!practice && player.id === room.host && <small>房主</small>}
+                {!player.online ? <small>{room.phase === 'playing' ? '掉线托管' : '掉线'}</small> : player.autoPlay && !player.bot && <small className="auto-status">托管中</small>}
+                {waitingToStart && !practice && player.online && !player.bot && <small className={player.prepared ? 'prepared-status' : undefined}>{player.prepared ? '已准备' : '未准备'}</small>}
+                <small className="wins" title="累计积分">{player.score > 0 ? '+' : ''}{player.score} 分</small>{isHost && !practice && player.id !== room.you && !player.bot && <button className="roster-kick" type="button" aria-label={`移出 ${player.name}`} disabled={!ready || busy} onClick={() => openPlayerDialog(player.id, 'kick')}>移出</button>}
+              </div>)}
+            </div>
+            {!practice && <section className="room-spectators" aria-labelledby="spectator-roster-title">
+              <h3 className="roster-title" id="spectator-roster-title">观战席 <span>{room.spectatorCount} 人</span></h3>
+              {room.spectators.length ? <ul className="spectator-roster">
+                {room.spectators.map((spectator) => <li className="roster-row" key={spectator.id}>
+                  <Avatar seed={spectator.avatar} size={30}/><span title={spectator.name}>{spectator.name}</span>
+                  {spectator.id === room.you && <small>我</small>}
+                  {waitingToStart && spectator.prepared && <small className="prepared-status">已准备</small>}
+                </li>)}
+              </ul> : <p className="roster-empty">暂无观战者</p>}
+            </section>}
+            {room.finalScores ? <div className="match-actions">
+              {isHost && <button className="button button-primary" type="button" disabled={!ready || busy} onClick={() => game.restart(room.revision)}>重开一场</button>}
+              <button className="button button-outline" type="button" onClick={() => { game.setError(''); setDialog('scores'); }}><Icon name="trophy" size={17}/>查看记分板</button>
+            </div> : waitingToStart && !spectating && (practice
+              ? <button className="button button-primary full" type="button" disabled={!ready || busy} onClick={() => game.start(room.revision)}><Icon name="play" size={17}/>下一局</button>
+              : <>{prepareButton}<p className="waiting-text">{prepareHint}</p></>)}
+            {room.phase !== 'playing' && !spectating && error && !dialog && <p className="error" role="alert">{error}</p>}
             {!spectating && <button type="button" className="text-action leave-button" onClick={confirmLeave}><Icon name="exit" size={16}/> {practice ? '退出练习' : '离开房间'}</button>}
           </section>}
           <RulesSummary onRules={() => setDialog('rules')}/>
@@ -430,14 +461,18 @@ function App() {
     {dialog === 'settings' && <ReminderSettings {...reminders} close={close}/>}
     {dialog === 'profile' && <Dialog title="编辑个人资料" close={close}><form onSubmit={changeProfile}><ProfileFields value={draft} onChange={setDraft} id="edit-name"/><p className="dialog-hint">昵称可以自己输入，也可以随机生成。点头像可以换另一种造型。</p>{error && <p className="error" role="alert">{error}</p>}<button className="button button-primary full" disabled={busy || Boolean(room && !ready)}>保存资料</button></form></Dialog>}
     {dialog === 'scores' && room?.finalScores && <Dialog title="最终记分板" close={close}>
-      <p className="dialog-hint">本房 {room.roundsCompleted} 局已打完，以下是累计积分。</p>
+      <p className="dialog-hint">第 {room.matchNumber} 场共 {room.roundsCompleted} 局已打完，以下是累计积分。{isHost && '重开会清零积分并返回等候区，房间码和局数不变。'}</p>
       <ol className="final-scores">{room.finalScores.map((entry) => <li key={entry.playerId}>
         <span className="score-rank">{room.finalScores!.findIndex((other) => other.score === entry.score) + 1}</span><Avatar seed={entry.avatar} size={34}/><strong>{entry.name}{entry.playerId === room.you ? ' · 我' : ''}</strong><b>{entry.score > 0 ? '+' : ''}{entry.score} 分</b>
       </li>)}</ol>
-      <button type="button" className="button button-outline full scores-reveal" onClick={() => {
-        close();
-        requestAnimationFrame(() => document.getElementById('round-result')?.scrollIntoView());
-      }}>查看本局亮牌</button>
+      <div className="match-actions scores-actions">
+        {isHost && <button type="button" className="button button-primary" disabled={!ready || busy} onClick={() => game.restart(room.revision)}>重开一场</button>}
+        <button type="button" className="button button-outline" onClick={() => {
+          close();
+          requestAnimationFrame(() => document.getElementById('round-result')?.scrollIntoView());
+        }}>查看本局亮牌</button>
+      </div>
+      {error && <p className="error" role="alert">{error}</p>}
     </Dialog>}
     {dialog === 'reaction' && <Dialog title={target ? `和${target.name}互动` : '玩家已离桌'} close={close}>
       {target && <div className="reaction-picker">{(Object.entries(REACTIONS) as [keyof typeof REACTIONS, typeof REACTIONS[keyof typeof REACTIONS]][]).map(([kind, [symbol, label]]) => <button className="button button-outline" type="button" key={kind} disabled={busy || !ready} onClick={() => game.react(target.id, kind, close)}><span aria-hidden="true">{symbol}</span>{label}</button>)}</div>}

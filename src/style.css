@@ -170,9 +170,14 @@ label, .field-label { color: #dbded1; display: block; font-weight: 650; font-siz
 .room-players { margin-block: 15px 12px; }
 .roster-title { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .roster-title span { color: var(--subtle); font-family: var(--mono); }
+.room-spectators { margin-bottom: 12px; }
+.spectator-roster { list-style: none; margin: 0; padding: 0; }
+.roster-empty { color: var(--muted); font-size: 12px; padding-block: 5px; }
 .roster-row { min-height: 43px; display: flex; align-items: center; gap: 7px; padding: 3px 0; border-bottom: 1px solid #ffffff0d; }
 .roster-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .roster-row small { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.roster-row .prepared-status { color: var(--green); }
+.roster-row .auto-status, .seat-count .auto-status { color: var(--gold); }
 .roster-row .wins { color: var(--gold); display: flex; align-items: center; gap: 4px; }
 .roster-kick { flex: none; min-height: 40px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: #f5af9a; font-size: 12px; }
 .roster-kick:hover { background: #f5af9a18; }
@@ -194,6 +199,7 @@ label, .field-label { color: #dbded1; display: block; font-weight: 650; font-siz
 .spectator-heading { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
 .spectator-heading p { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .spectator-heading .button { flex: none; }
+.spectator-prepare { margin-top: 10px; }
 .hand-header { display: flex; justify-content: space-between; gap: 9px; align-items: center; }
 .hand-header h2 small, .score-panel h2 small { font-size: 11px; color: var(--gold); font-weight: 600; }
 .hand-header p { color: var(--muted); font-size: 12px; margin-top: 4px; }
@@ -249,7 +255,8 @@ button.playing-card:hover { border-color: var(--gold); }
 .revealed-cards .card-corner svg { width: 8px; height: 8px; }
 .revealed-cards .joker-card .card-corner { font-size: 8px; }
 .empty-reveal { font-size: 12px; margin-top: 4px; }
-.scores-reveal { margin-top: 12px; }
+.match-actions { display: grid; gap: 8px; }
+.scores-actions { margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .dialog { width: min(480px, calc(100% - 30px)); border: 1px solid #485e4c; border-radius: 16px; padding: 0; color: inherit; background: #1a281e; box-shadow: 0 18px 70px #000a; max-height: 85dvh; }
 .dialog::backdrop { background: #070e0acc; }
 .dialog-content { padding: 18px 20px 22px; }

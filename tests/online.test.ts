@@ -42,12 +42,17 @@ async function fixture(t: TestContext) {
   return { server, connect };
 }
 
+async function prepare(client: Client, revision: number, prepared = true) {
+  value(await client.timeout(2000).emitWithAck('prepare', { revision, prepared }));
+}
+
 async function startFriendsRound(host: Client, guest: Client, roundLimit: RoundLimit = 5) {
   const session = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1, roundLimit }));
   const joining = state(host, (view) => view.players.length === 2);
   const guestSession = value<Session>(await guest.timeout(2000).emitWithAck('join', { code: session.code, name: '好友', avatar: 2 }));
+  const { revision } = await joining;
   const starting = state(host, (view) => view.phase === 'playing');
-  value(await host.timeout(2000).emitWithAck('start', (await joining).revision));
+  await Promise.all([prepare(host, revision), prepare(guest, revision)]);
   return { session, guestSession, round: await starting };
 }
 
@@ -76,8 +81,7 @@ test('联机建房、加入、资料同步、掉线恢复和人机自动行动',
   assert.equal((await host.timeout(2000).emitWithAck('react', { to: joined.playerId, kind: 'egg' })).ok, false);
   const roomState = state(host, (room) => room.phase === 'playing');
   const guestState = state(guest, (room) => room.phase === 'playing');
-  assert.equal((await guest.timeout(2000).emitWithAck('start', waiting.revision)).ok, false);
-  value(await host.timeout(2000).emitWithAck('start', waiting.revision));
+  await Promise.all([prepare(host, waiting.revision), prepare(guest, waiting.revision)]);
   const round = await roomState;
   const guestRound = await guestState;
   assert.equal(round.deckSize, 54);
@@ -176,7 +180,7 @@ test('房主可移出在线或掉线的好友；旧座位失效且进行中的�
   const lobby = await joining;
   assert.equal((await guest.timeout(2000).emitWithAck('kick', thirdSeat.playerId)).ok, false);
   assert.equal((await host.timeout(2000).emitWithAck('kick', room.playerId)).ok, false);
-  value(await host.timeout(2000).emitWithAck('start', lobby.revision));
+  await Promise.all([host, guest, third].map((client) => prepare(client, lobby.revision)));
   const removed = new Promise<string>((resolve) => guest.once('removed', resolve));
   const cancelled = state(host, (view) => view.phase === 'lobby' && view.players.length === 2);
   value(await host.timeout(2000).emitWithAck('kick', guestSeat.playerId));
@@ -207,7 +211,7 @@ test('同一回合可反复催牌，只提醒当前在线手动玩家，不影�
   const lobby = await joining;
   assert.equal((await guest.timeout(2000).emitWithAck('nudge', lobby.revision)).ok, false);
   const playing = state(host, (view) => view.phase === 'playing');
-  value(await host.timeout(2000).emitWithAck('start', lobby.revision));
+  await Promise.all([host, guest, third].map((client) => prepare(client, lobby.revision)));
   const turn = await playing;
   assert.equal((await host.timeout(2000).emitWithAck('nudge', turn.revision)).ok, false);
   assert.equal((await guest.timeout(2000).emitWithAck('nudge', lobby.revision)).ok, false);
@@ -239,8 +243,9 @@ test('断线快速代打，重连恢复掉线前的手动托管设置', { timeou
   const room = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1 }));
   const joining = state(host, (view) => view.players.length === 2);
   const guestSeat = value<Session>(await guest.timeout(2000).emitWithAck('join', { code: room.code, name: '来客', avatar: 2 }));
+  const { revision } = await joining;
   const starting = state(host, (view) => view.phase === 'playing');
-  value(await host.timeout(2000).emitWithAck('start', (await joining).revision));
+  await Promise.all([prepare(host, revision), prepare(guest, revision)]);
   const turn = await starting;
   const table = server.sockets.sockets.get(host.id!)!.data.membership!.room;
   table.players[0].hand = [{ id: 'a3', rank: 3, suit: 'hearts' }, { id: 'a5', rank: 5, suit: 'hearts' }];
@@ -292,16 +297,26 @@ test('开局后加入只能观战，满房拒绝新加入，观战退出和掉�
   const guest = await connect();
   const { session, guestSession, round } = await startFriendsRound(host, guest);
   const { code } = session;
+  assert.deepEqual(round.spectators, []);
   const watcher = await connect();
   const watched = state(watcher, (view) => view.spectating);
+  const joined = state(host, (view) => view.spectatorCount === 1);
   const watchingSession = value<Session>(await watcher.timeout(2000).emitWithAck('join', { code, name: '观战者', avatar: 3 }));
-  const view = await watched;
+  const [view, hostView] = await Promise.all([watched, joined]);
   assert.equal(view.you, watchingSession.playerId);
   assert.equal(view.spectatorCount, 1);
+  const publicWatcher = { id: watchingSession.playerId, name: '观战者', avatar: 3, prepared: false };
+  assert.deepEqual(view.spectators, [publicWatcher]);
+  assert.deepEqual(hostView.spectators, view.spectators);
   assert.deepEqual(view.players, round.players);
   assert.deepEqual([view.revision, view.turnDeadline, view.deckSize, view.notice], [round.revision, round.turnDeadline, 54, round.notice]);
   assert.deepEqual([view.hand, view.playableCardIds, view.drawnCardId, view.revealedHands], [[], [], null, []]);
   const request = watcher.timeout(2000);
+  const updatedRoster = [host, watcher].map((client) => state(client, (view) => view.spectators[0]?.name === '改名的观众'));
+  value(await request.emitWithAck('profile', { name: '改名的观众', avatar: 9 }));
+  for (const updated of await Promise.all(updatedRoster)) {
+    assert.deepEqual(updated.spectators, [{ ...publicWatcher, name: '改名的观众', avatar: 9 }]);
+  }
   for (const result of await Promise.all([
     request.emitWithAck('play', { revision: round.revision, ids: round.hand.slice(0, 1).map(({ id }) => id) }),
     request.emitWithAck('pass', round.revision), request.emitWithAck('start', round.revision), request.emitWithAck('autoplay', true),
@@ -320,7 +335,9 @@ test('开局后加入只能观战，满房拒绝新加入，观战退出和掉�
   const extra = await connect();
   const joinExtra = () => extra.timeout(2000).emitWithAck('join', { code, name: '新观众', avatar: 6 });
   assert.deepEqual(await joinExtra(), { ok: false, error: '房间已满（含观战），最多 6 人。' });
+  const afterLeaving = state(host, (view) => view.spectatorCount === MAX_PLAYERS - 3);
   value(await watcher.timeout(2000).emitWithAck('leaveSpectator'));
+  assert.deepEqual((await afterLeaving).spectators.map(({ name }) => name), ['观众0', '观众1', '观众2']);
   value(await joinExtra());
 
   const offline = state(host, (view) => view.players.some(({ id, online }) => id === guestSession.playerId && !online));
@@ -335,6 +352,7 @@ test('开局后加入只能观战，满房拒绝新加入，观战退出和掉�
   const freed = state(host, (view) => view.spectatorCount === MAX_PLAYERS - 3);
   others[0].disconnect();
   const continuing = await freed;
+  assert.deepEqual(continuing.spectators.map(({ name }) => name), ['观众1', '观众2', '新观众']);
   assert.deepEqual([continuing.phase, continuing.revision, continuing.turnDeadline, continuing.notice], ['playing', round.revision, round.turnDeadline, round.notice]);
   assert.equal((await watcher.timeout(2000).emitWithAck('resume', watchingSession)).ok, false);
   value(await watcher.timeout(2000).emitWithAck('join', { code, name: '重新观战', avatar: 3 }));
@@ -351,10 +369,11 @@ test('开局后加入只能观战，满房拒绝新加入，观战退出和掉�
   assert.deepEqual([drawn.hand, drawn.drawnCardId, drawn.revealedHands], [[], null, []]);
 });
 
-test('观战者不参与本局结算，保持在线到下一局发牌才入座', { timeout: 8_000 }, async (t) => {
+test('观战者不参与本局结算，准备后下一局入座，未准备则继续观战', { timeout: 8_000 }, async (t) => {
   const { server, connect } = await fixture(t);
   const host = await connect();
-  const { session, guestSession, round } = await startFriendsRound(host, await connect());
+  const guest = await connect();
+  const { session, guestSession, round } = await startFriendsRound(host, guest);
   const viewers: { client: Client; session: Session }[] = [];
   for (let i = 0; i < 4; i++) {
     const client = await connect();
@@ -366,17 +385,30 @@ test('观战者不参与本局结算，保持在线到下一局发牌才入座',
   value(await host.timeout(2000).emitWithAck('play', { revision: round.revision, ids: ['winner'] }));
   const result = await settled;
   assert.equal(result.spectating, true);
+  assert(result.players.every(({ prepared }) => !prepared));
   assert.deepEqual(result.settlement.map(({ playerId }) => playerId), [session.playerId, guestSession.playerId]);
   assert.deepEqual(result.revealedHands.map(({ playerId, cards }) => [playerId, cards.length]), [[session.playerId, 0], [guestSession.playerId, 5]]);
 
   const afterDeparture = state(host, (view) => view.phase === 'finished' && view.spectatorCount === 3);
   viewers[3].client.disconnect();
   assert.equal((await afterDeparture).revision, result.revision);
+  const waitingForHost = state(host, (view) => view.preparedSpectators === 2 && view.players[1].prepared);
+  await Promise.all([prepare(guest, result.revision), ...viewers.slice(0, 2).map(({ client }) => prepare(client, result.revision))]);
+  const waiting = await waitingForHost;
+  assert.equal(waiting.phase, 'finished');
+  assert.equal(waiting.youPrepared, false);
+  assert.deepEqual(waiting.spectators.map(({ id, prepared }) => [id, prepared]), viewers.slice(0, 3).map(({ session }, index) => [session.playerId, index < 2]));
   const nextRound = state(viewer, (view) => view.phase === 'playing' && view.round === 2);
-  value(await host.timeout(2000).emitWithAck('start', result.revision));
+  const stillWatching = state(viewers[2].client, (view) => view.phase === 'playing' && view.round === 2);
+  await prepare(host, result.revision);
   const seated = await nextRound;
-  assert.deepEqual([seated.you, seated.spectating, seated.spectatorCount, seated.hand.length, seated.deckSize], [viewerSession.playerId, false, 0, 5, 108]);
-  assert.deepEqual(seated.players.map(({ id }) => id), [session.playerId, guestSession.playerId, ...viewers.slice(0, 3).map(({ session }) => session.playerId)]);
+  assert.deepEqual([seated.you, seated.spectating, seated.spectatorCount, seated.hand.length, seated.deckSize], [viewerSession.playerId, false, 1, 5, 54]);
+  assert.deepEqual(seated.players.map(({ id }) => id), [session.playerId, guestSession.playerId, ...viewers.slice(0, 2).map(({ session }) => session.playerId)]);
+  const privateView = await stillWatching;
+  assert.equal(privateView.spectating, true);
+  assert.deepEqual(privateView.hand, []);
+  assert.deepEqual(seated.spectators, [{ id: viewers[2].session.playerId, name: '观众2', avatar: 2, prepared: false }]);
+  assert.deepEqual(privateView.spectators, seated.spectators);
   assert.equal(seated.players.find(({ id }) => id === viewerSession.playerId)?.score, 0);
   assert.equal((await viewer.timeout(2000).emitWithAck('leaveSpectator')).ok, false);
 
@@ -409,4 +441,116 @@ test('最后一局的观战者可查看记分板，房间关闭时退出', { tim
   value(await host.timeout(2000).emitWithAck('leave'));
   value(await guest.timeout(2000).emitWithAck('leave'));
   assert.match(await closed, /房间已关闭/);
+});
+
+test('好友房包括房主在内全员准备后自动开局，整场结束后可原房重开', { timeout: 8_000 }, async (t) => {
+  const { server, connect } = await fixture(t);
+  const [host, guest, third, viewer, newcomer] = await Promise.all(Array.from({ length: 5 }, () => connect()));
+  const session = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1, roundLimit: 1 }));
+  const join = (client: Client, name: string) => client.timeout(2000).emitWithAck('join', { code: session.code, name, avatar: 2 });
+  const guestSeat = value<Session>(await join(guest, '好友'));
+  const thirdArrived = state(host, (view) => view.players.length === 3);
+  value(await join(third, '同桌'));
+  const lobby = await thirdArrived;
+  const hostRequest = host.timeout(2000);
+  assert.equal(lobby.players.some(({ prepared }) => prepared), false);
+  assert.equal((await hostRequest.emitWithAck('restart', lobby.revision)).ok, false);
+  assert.deepEqual(await hostRequest.emitWithAck('start', lobby.revision), { ok: false, error: '好友房全员准备后会自动开局。' });
+
+  const guestsPrepared = state(host, (view) => view.players.slice(1).every(({ prepared }) => prepared));
+  await Promise.all([prepare(guest, lobby.revision), prepare(third, lobby.revision)]);
+  const waiting = await guestsPrepared;
+  assert.deepEqual([waiting.phase, waiting.youPrepared], ['lobby', false]);
+  await prepare(guest, lobby.revision, false);
+  const hostPrepared = state(host, (view) => view.youPrepared);
+  await prepare(host, lobby.revision);
+  const stillWaiting = await hostPrepared;
+  assert.deepEqual([stillWaiting.phase, stillWaiting.players[1].prepared], ['lobby', false]);
+
+  const starting = state(host, (view) => view.phase === 'playing');
+  await prepare(guest, lobby.revision);
+  const round = await starting;
+  assert.equal(round.revision, lobby.revision + 1);
+  assert(round.players.every(({ prepared }) => !prepared));
+  assert.equal((await guest.timeout(2000).emitWithAck('prepare', { revision: round.revision, prepared: true })).ok, false);
+  assert.equal((await hostRequest.emitWithAck('restart', round.revision)).ok, false);
+  value(await join(viewer, '观众'));
+
+  const table = server.sockets.sockets.get(host.id!)!.data.membership!.room;
+  table.players[0].hand = [{ id: 'lead', rank: 3, suit: 'hearts' }, { id: 'held', rank: 9, suit: 'clubs' }];
+  table.players[1].hand = [{ id: 'reply', rank: 4, suit: 'spades' }];
+  const guestTurn = state(guest, (view) => view.turn === guestSeat.playerId);
+  value(await hostRequest.emitWithAck('play', { revision: round.revision, ids: ['lead'] }));
+  const settled = state(viewer, (view) => Boolean(view.finalScores));
+  value(await guest.timeout(2000).emitWithAck('play', { revision: (await guestTurn).revision, ids: ['reply'] }));
+  const final = await settled;
+  assert.equal(final.winner, guestSeat.playerId);
+  assert(final.finalScores!.some(({ score }) => score !== 0));
+  assert.equal((await guest.timeout(2000).emitWithAck('restart', final.revision)).ok, false);
+  assert.equal((await hostRequest.emitWithAck('restart', round.revision)).ok, false);
+
+  const resetting = state(host, (view) => view.phase === 'lobby' && view.matchNumber === 2);
+  const viewerReset = state(viewer, (view) => view.phase === 'lobby');
+  value(await hostRequest.emitWithAck('restart', final.revision));
+  const reset = await resetting;
+  assert.deepEqual([reset.code, reset.host, reset.roundLimit, reset.round, reset.roundsCompleted], [session.code, session.playerId, 1, 0, 0]);
+  assert.deepEqual([reset.hand, reset.revealedHands, reset.settlement, reset.finalScores, reset.winner, reset.turn, reset.deckCount], [[], [], [], null, null, null, 0]);
+  assert.deepEqual(reset.players.map(({ id }) => id), final.players.map(({ id }) => id));
+  assert(reset.players.every(({ prepared, score }) => !prepared && score === 0));
+  assert.equal((await viewerReset).spectating, true);
+  const joined = state(host, (view) => view.players.length === 4);
+  value(await join(newcomer, '新好友'));
+  const { revision } = await joined;
+  const restarted = state(host, (view) => view.matchNumber === 2 && view.phase === 'playing');
+  await Promise.all([guest, third, newcomer, host].map((client) => prepare(client, revision)));
+  const newRound = await restarted;
+  assert.deepEqual([newRound.round, newRound.turn, newRound.spectatorCount, newRound.hand.length], [1, session.playerId, 1, 6]);
+  table.players[0].hand = [{ id: 'winner', rank: 3, suit: 'hearts' }];
+  const secondFinal = state(viewer, (view) => view.matchNumber === 2 && Boolean(view.finalScores));
+  value(await hostRequest.emitWithAck('play', { revision: newRound.revision, ids: ['winner'] }));
+  assert.equal((await secondFinal).finalScores?.length, 4);
+});
+
+test('只有房主准备时不开局，已准备的掉线玩家回桌后可自动开局', { timeout: 8_000 }, async (t) => {
+  const { connect } = await fixture(t);
+  const [host, guest, third] = await Promise.all([connect(), connect(), connect()]);
+  const created = state(host, (view) => view.phase === 'lobby');
+  const session = value<Session>(await host.timeout(2000).emitWithAck('create', { name: '房主', avatar: 1 }));
+  const hostReady = state(host, (view) => view.youPrepared);
+  await prepare(host, (await created).revision);
+  assert.equal((await hostReady).phase, 'lobby');
+
+  const joining = state(host, (view) => view.players.length === 3);
+  const guestSeat = value<Session>(await guest.timeout(2000).emitWithAck('join', { code: session.code, name: '好友', avatar: 2 }));
+  value(await third.timeout(2000).emitWithAck('join', { code: session.code, name: '同桌', avatar: 3 }));
+  const { revision } = await joining;
+  await prepare(guest, revision);
+  const dropped = state(host, (view) => !view.players[1].online);
+  guest.disconnect();
+  assert.equal((await dropped).players[1].prepared, true);
+  const allPrepared = state(host, (view) => view.players.every(({ prepared }) => prepared));
+  await prepare(third, revision);
+  assert.equal((await allPrepared).phase, 'lobby');
+
+  const back = await connect();
+  const started = state(host, (view) => view.phase === 'playing');
+  value(await back.timeout(2000).emitWithAck('resume', guestSeat));
+  assert.deepEqual((await started).players.map(({ count }) => count), [6, 5, 5]);
+});
+
+test('其他玩家和观众能实时看到非当前玩家开启和取消托管', { timeout: 8_000 }, async (t) => {
+  const { connect } = await fixture(t);
+  const [host, guest, viewer] = await Promise.all([connect(), connect(), connect()]);
+  const { session, guestSession, round } = await startFriendsRound(host, guest);
+  value(await viewer.timeout(2000).emitWithAck('join', { code: session.code, name: '观众', avatar: 3 }));
+  for (const enabled of [true, false]) {
+    const hasStatus = (view: RoomView) => view.players.find(({ id }) => id === guestSession.playerId)?.autoPlay === enabled;
+    const updates = [state(host, hasStatus), state(viewer, hasStatus)];
+    value(await guest.timeout(2000).emitWithAck('autoplay', enabled));
+    for (const view of await Promise.all(updates)) {
+      assert.equal(view.turn, session.playerId);
+      assert.equal(view.turnDeadline, round.turnDeadline);
+      assert.equal(view.players[1].online, true);
+    }
+  }
 });

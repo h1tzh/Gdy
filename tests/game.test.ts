@@ -1,12 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AUTO_PASS_MS, bombMultiplier, TURN_MS, type Card } from '../shared/protocol.js';
-import { addPlayer, createRoom, passTurn, playCards, removePlayer, startRound, viewFor } from '../server/game.js';
+import { addPlayer, createRoom, passTurn, playCards, removePlayer, restartMatch, setPrepared, startIfPrepared, startRound, viewFor, type Room } from '../server/game.js';
+
+function startPreparedRound(room: Room) {
+  for (const player of room.players) setPrepared(room, player, { revision: room.revision, prepared: true });
+  startIfPrepared(room);
+}
 
 function game(count = 3) {
   const room = createRoom('TEST0');
   const players = Array.from({ length: count }, (_, i) => addPlayer(room, { name: `玩家 ${i + 1}`, avatar: i }, `socket-${i}`));
-  startRound(room, players[0], room.revision);
+  startPreparedRound(room);
   return { room, players };
 }
 
@@ -99,7 +104,7 @@ test('全桌可见倍数从 x1 到 x2、x4；留王仅影响结算，重开重�
   assert.equal(room.bombCount, 2);
   assert.deepEqual(room.settlement.map(({ remaining, multiplier, delta }) => [remaining, multiplier, delta]), [[0, 1, 36], [1, 4, -4], [3, 8, -24], [2, 4, -8]]);
   assert.deepEqual([a.score, b.score, c.score, d.score], [-4, 36, -24, -8]);
-  startRound(room, a, room.revision);
+  startPreparedRound(room);
   assert.equal(room.turn, b.id);
   assert.deepEqual(visibleMultipliers(), [1, 1, 1, 1]);
   assert.equal(room.settlement.length, 0);
@@ -168,7 +173,7 @@ test('亮牌只在本局正式结束后公开，且重开即清空；提示只�
   removePlayer(room, b);
   const c = addPlayer(room, { name: '后来加入', avatar: 0 }, 'c');
   assert.deepEqual(viewFor(room, c).revealedHands, revealed);
-  startRound(room, a, room.revision);
+  startPreparedRound(room);
   assert.deepEqual(viewFor(room, a).revealedHands, []);
   assert.deepEqual(viewFor(room, c).revealedHands, []);
 });
@@ -235,7 +240,7 @@ test('支持固定 1、5、10、20 局，最后一局才给出总榜并禁止再
     const a = addPlayer(room, { name: '发呆的仙人掌', avatar: 1 }, 'a');
     const b = addPlayer(room, { name: '暴躁的勺子', avatar: 2 }, 'b');
     for (let round = 1; round <= limit; round++) {
-      startRound(room, a, room.revision);
+      startPreparedRound(room);
       assert.equal(room.round, round);
       a.hand = cards(5);
       b.hand = cards(10, 12);
@@ -259,7 +264,7 @@ test('取消的局数不计入，已打过牌的离桌玩家仍计入最终记�
   assert.equal(room.turnDeadline, null);
   room.roundLimit = 5;
   for (let round = 1; round <= 5; round++) {
-    startRound(room, a, room.revision);
+    startPreparedRound(room);
     const other = room.players[1];
     a.hand = cards(3);
     other.hand = cards(6);
@@ -270,4 +275,7 @@ test('取消的局数不计入，已打过牌的离桌玩家仍计入最终记�
     }
   }
   assert.deepEqual(room.finalScores?.map((entry) => entry.score), [5, -1, -4]);
+  restartMatch(room, a, room.revision);
+  assert.deepEqual(room.departedScores, []);
+  assert(room.players.every((player) => !player.completedRound && !player.prepared && player.score === 0));
 });
